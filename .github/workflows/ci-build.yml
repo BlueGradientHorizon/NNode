@@ -46,7 +46,7 @@ jobs:
       matrix:
         target: ${{ fromJson(needs.list-targets.outputs.targets) }}
     container:
-      image: espressif/idf:release-v5.5
+      image: espressif/idf:release-v6.1
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1

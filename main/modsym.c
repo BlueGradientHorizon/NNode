@@ -29,8 +29,6 @@ extern int gpio_config;
 extern int gpio_config_as_analog;
 extern int gpio_deep_sleep_hold_dis;
 extern int gpio_deep_sleep_hold_en;
-extern int gpio_deep_sleep_wakeup_disable;
-extern int gpio_deep_sleep_wakeup_enable;
 extern int gpio_dump_io_configuration;
 extern int gpio_force_hold_all;
 extern int gpio_force_unhold_all;
@@ -44,9 +42,7 @@ extern int gpio_input_enable;
 extern int gpio_install_isr_service;
 extern int gpio_intr_disable;
 extern int gpio_intr_enable;
-extern int gpio_iomux_in;
 extern int gpio_iomux_input;
-extern int gpio_iomux_out;
 extern int gpio_iomux_output;
 extern int gpio_isr_handler_add;
 extern int gpio_isr_handler_remove;
@@ -72,6 +68,8 @@ extern int gpio_sleep_set_pull_mode;
 extern int gpio_uninstall_isr_service;
 extern int gpio_wakeup_disable;
 extern int gpio_wakeup_enable;
+extern int gpio_wakeup_disable_on_hp_periph_powerdown_sleep;
+extern int gpio_wakeup_enable_on_hp_periph_powerdown_sleep;
 extern int gpio_del_glitch_filter;
 extern int gpio_glitch_filter_disable;
 extern int gpio_glitch_filter_enable;
@@ -301,10 +299,6 @@ extern int xPortStartScheduler;
 extern int xPortSwitchFlag;
 extern int rtos_int_enter;
 extern int rtos_int_exit;
-extern int ulTaskNotifyTake;
-extern int vTaskDelayUntil;
-extern int xQueueGenericReceive;
-extern int xTaskNotifyWait;
 extern int vEventGroupDeleteWithCaps;
 extern int xEventGroupCreateWithCaps;
 extern int vQueueDeleteWithCaps;
@@ -324,8 +318,6 @@ static const nnode_sym_t kNNodeSyms[] = {
     { "gpio_config_as_analog", (uintptr_t)&gpio_config_as_analog },
     { "gpio_deep_sleep_hold_dis", (uintptr_t)&gpio_deep_sleep_hold_dis },
     { "gpio_deep_sleep_hold_en", (uintptr_t)&gpio_deep_sleep_hold_en },
-    { "gpio_deep_sleep_wakeup_disable", (uintptr_t)&gpio_deep_sleep_wakeup_disable },
-    { "gpio_deep_sleep_wakeup_enable", (uintptr_t)&gpio_deep_sleep_wakeup_enable },
     { "gpio_dump_io_configuration", (uintptr_t)&gpio_dump_io_configuration },
     { "gpio_force_hold_all", (uintptr_t)&gpio_force_hold_all },
     { "gpio_force_unhold_all", (uintptr_t)&gpio_force_unhold_all },
@@ -339,9 +331,7 @@ static const nnode_sym_t kNNodeSyms[] = {
     { "gpio_install_isr_service", (uintptr_t)&gpio_install_isr_service },
     { "gpio_intr_disable", (uintptr_t)&gpio_intr_disable },
     { "gpio_intr_enable", (uintptr_t)&gpio_intr_enable },
-    { "gpio_iomux_in", (uintptr_t)&gpio_iomux_in },
     { "gpio_iomux_input", (uintptr_t)&gpio_iomux_input },
-    { "gpio_iomux_out", (uintptr_t)&gpio_iomux_out },
     { "gpio_iomux_output", (uintptr_t)&gpio_iomux_output },
     { "gpio_isr_handler_add", (uintptr_t)&gpio_isr_handler_add },
     { "gpio_isr_handler_remove", (uintptr_t)&gpio_isr_handler_remove },
@@ -367,11 +357,16 @@ static const nnode_sym_t kNNodeSyms[] = {
     { "gpio_uninstall_isr_service", (uintptr_t)&gpio_uninstall_isr_service },
     { "gpio_wakeup_disable", (uintptr_t)&gpio_wakeup_disable },
     { "gpio_wakeup_enable", (uintptr_t)&gpio_wakeup_enable },
+    { "gpio_wakeup_disable_on_hp_periph_powerdown_sleep", (uintptr_t)&gpio_wakeup_disable_on_hp_periph_powerdown_sleep },
+    { "gpio_wakeup_enable_on_hp_periph_powerdown_sleep", (uintptr_t)&gpio_wakeup_enable_on_hp_periph_powerdown_sleep },
     { "gpio_del_glitch_filter", (uintptr_t)&gpio_del_glitch_filter },
     { "gpio_glitch_filter_disable", (uintptr_t)&gpio_glitch_filter_disable },
     { "gpio_glitch_filter_enable", (uintptr_t)&gpio_glitch_filter_enable },
     { "gpio_new_pin_glitch_filter", (uintptr_t)&gpio_new_pin_glitch_filter },
-    /* --- end of gpio_ driver group (51 exported).
+    /* --- end of gpio_ driver group (49 exported).
+     * ESP-IDF v6.0: gpio_deep_sleep_wakeup_enable/disable were removed,
+     * replaced by gpio_wakeup_enable/disable_on_hp_periph_powerdown_sleep;
+     * gpio_iomux_in/out were removed, use gpio_iomux_input/output.
      * Deliberately not exported (HAL internals, not part of the driver API normal modules use):
      * gpio_hal_intr_disable, gpio_hal_intr_enable_on_core, gpio_hal_iomux_in, gpio_hal_iomux_out, gpio_hal_isolate_in_sleep. */
     { "rtc_gpio_is_valid_gpio", (uintptr_t)&rtc_gpio_is_valid_gpio },
@@ -598,10 +593,6 @@ static const nnode_sym_t kNNodeSyms[] = {
     { "xPortSwitchFlag", (uintptr_t)&xPortSwitchFlag },
     { "rtos_int_enter", (uintptr_t)&rtos_int_enter },
     { "rtos_int_exit", (uintptr_t)&rtos_int_exit },
-    { "ulTaskNotifyTake", (uintptr_t)&ulTaskNotifyTake },
-    { "vTaskDelayUntil", (uintptr_t)&vTaskDelayUntil },
-    { "xQueueGenericReceive", (uintptr_t)&xQueueGenericReceive },
-    { "xTaskNotifyWait", (uintptr_t)&xTaskNotifyWait },
     { "vEventGroupDeleteWithCaps", (uintptr_t)&vEventGroupDeleteWithCaps },
     { "xEventGroupCreateWithCaps", (uintptr_t)&xEventGroupCreateWithCaps },
     { "vQueueDeleteWithCaps", (uintptr_t)&vQueueDeleteWithCaps },
@@ -612,7 +603,11 @@ static const nnode_sym_t kNNodeSyms[] = {
     { "xSemaphoreCreateGenericWithCaps", (uintptr_t)&xSemaphoreCreateGenericWithCaps },
     { "xStreamBufferGenericCreateWithCaps", (uintptr_t)&xStreamBufferGenericCreateWithCaps },
     { "xTaskCreatePinnedToCoreWithCaps", (uintptr_t)&xTaskCreatePinnedToCoreWithCaps },
-    /* --- end of FreeRTOS kernel group (226 exported).
+    /* --- end of FreeRTOS kernel group (222 exported).
+     * Dropped in ESP-IDF v6.0 (were already macros/removed upstream, no
+     * linkable symbol left): ulTaskNotifyTake, vTaskDelayUntil,
+     * xQueueGenericReceive, xTaskNotifyWait. Use ulTaskNotifyTake/xTaskDelayUntil
+     * macros and xQueueReceive/xQueuePeek/xQueueSemaphoreTake instead.
      * Deliberately not exported (debugger-only struct, kernel-internal counter and an application-provided hook (must be defined by the app, never imported from the firmware) respectively):
      * FreeRTOS_openocd_params, uxTopUsedPriority, vApplicationStackOverflowHook. */
     { NULL, (uintptr_t)0 },

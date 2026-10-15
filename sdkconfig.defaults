@@ -7,4 +7,12 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 CONFIG_LWIP_IP_FORWARD=y
 CONFIG_LWIP_IPV4_NAPT=y
 CONFIG_LWIP_IPV4_NAPT_PORTMAP=y
-CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n
+CONFIG_ESP_SYSTEM_MEMPROT=n
+# ELF loader must look for modules where NNode keeps them: LittleFS /data
+# (its default is /storage, which does not exist here -> "open failed").
+CONFIG_ELF_DYNAMIC_LOAD_SHARED_OBJECT=y
+CONFIG_ELF_FILE_SYSTEM_BASE_PATH="/data"
+# Newlib, not the v6 default PicolibC: ELF modules and the modsym table
+# rely on Newlib internals (__getreent), and the pinned elf_loader fork
+# includes <reent.h>. Compatibility matters more than the size saving.
+CONFIG_LIBC_NEWLIB=y

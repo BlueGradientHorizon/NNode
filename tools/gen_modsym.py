@@ -63,6 +63,8 @@ GROUP_TITLE = {
     "freertos": "FreeRTOS kernel group",
 }
 # Deliberately omitted symbols per family, with reasons.
+# The "v6.0-removed" set keeps regeneration from the old (v5.x) vendor
+# table link-clean on ESP-IDF v6: those symbols no longer exist there.
 OMITTED = {
     "gpio": ([
         "gpio_hal_intr_disable",
@@ -70,6 +72,10 @@ OMITTED = {
         "gpio_hal_iomux_in",
         "gpio_hal_iomux_out",
         "gpio_hal_isolate_in_sleep",
+        "gpio_deep_sleep_wakeup_disable",  # v6.0-removed, use gpio_wakeup_*_on_hp_periph_powerdown_sleep
+        "gpio_deep_sleep_wakeup_enable",  # v6.0-removed, use gpio_wakeup_*_on_hp_periph_powerdown_sleep
+        "gpio_iomux_in",  # v6.0-removed, use gpio_iomux_input
+        "gpio_iomux_out",  # v6.0-removed, use gpio_iomux_output
     ], "HAL internals, not part of the driver API normal modules use"),
     "rtc": ([], None),
     "dedic": ([], None),
@@ -77,6 +83,10 @@ OMITTED = {
         "FreeRTOS_openocd_params",
         "uxTopUsedPriority",
         "vApplicationStackOverflowHook",
+        "ulTaskNotifyTake",  # v6.0-removed compat fn (now a macro, no symbol)
+        "vTaskDelayUntil",  # v6.0-removed compat fn (use xTaskDelayUntil)
+        "xQueueGenericReceive",  # v6.0-removed compat fn (use xQueueReceive/Peek)
+        "xTaskNotifyWait",  # v6.0-removed compat fn (now a macro, no symbol)
     ], "debugger-only struct, kernel-internal counter and an "
         "application-provided hook (must be defined by the app, "
         "never imported from the firmware) respectively"),
@@ -87,6 +97,23 @@ for g in GROUPS:
     ordered.extend(n for n in names if family(n) == g)
 assert len(ordered) == len(names), "family() must cover every symbol"
 names = ordered
+
+# Symbols that the old vendor table lacks but the firmware must export
+# (ESP-IDF v6.0 replacements for the removed gpio deep-sleep wakeup APIs).
+EXTRA = {
+    "gpio": [
+        "gpio_wakeup_disable_on_hp_periph_powerdown_sleep",
+        "gpio_wakeup_enable_on_hp_periph_powerdown_sleep",
+    ],
+    "rtc": [],
+    "dedic": [],
+    "freertos": [],
+}
+
+OMIT = set(n for v in OMITTED.values() for n in v[0])
+names = [n for n in names if n not in OMIT]
+for g in GROUPS:
+    names.extend(n for n in EXTRA[g] if n not in names)
 
 lines = []
 lines.append("/* NNode ELF module symbol table (custom resolver for elf_loader).")

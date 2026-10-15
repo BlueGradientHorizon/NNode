@@ -313,7 +313,7 @@ int nnode_net_scan(char *buf, size_t len)
             "%s{\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"rssi\":%d,\"auth\":\"%s\",\"width\":%d,\"second\":%d}",
             i ? "," : "", recs[i].ssid, bs, recs[i].primary,
             recs[i].rssi, auth_name(recs[i].authmode),
-            recs[i].bandwidth == WIFI_BW_HT40 ? 40 : 20,
+            recs[i].bandwidth == WIFI_BW40 ? 40 : 20,
             (int)recs[i].second);
     }
     if (o < len) {

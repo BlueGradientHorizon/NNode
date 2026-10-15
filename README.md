@@ -28,7 +28,7 @@ assets and fits easily next to your application.
 
 ## Quick start
 
-You need ESP-IDF v5.5 with the `esp32c3` target, plus two Python packages
+You need ESP-IDF v6.1 with the `esp32c3` target, plus two Python packages
 for the frontend build:
 
 ```sh
@@ -138,11 +138,14 @@ NNode/
   tools/          build helpers: web_inline.py (minify, inline, gzip),
                   gen_modsym.py (ELF module symbol table)
   main/           firmware: REST API, WiFi, NVS settings, LittleFS, ELF runner
+  examples/       loadable ELF module sources (blink for esp32c3);
+                  built via examples/build.sh <target> build <app> into
+                  build-<target>/modules/, nothing generated inside
   main/page/      generated index.html.gz, embedded into the firmware
   boards/         per-board files: partitions.csv, sdkconfig.defaults,
                   sdkconfig (generated from the defaults, not committed)
   sdkconfig.defaults  Kconfig defaults shared by all boards
-  build.sh        build/flash helper: ./build.sh [target] [action]
+  build.sh        build/flash helper: ./build.sh <target> <action>
 ```
 
 `build-*/`, `managed_components/`, `src_web/inlined/` and

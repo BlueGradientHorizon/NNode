@@ -1,0 +1,17 @@
+dependencies:
+  espressif/cmake_utilities:
+    dependencies: []
+    source:
+      path: ../../managed_components/espressif__cmake_utilities
+      type: local
+    version: 0.5.3
+  idf:
+    source:
+      type: idf
+    version: 6.1.0
+direct_dependencies:
+- espressif/cmake_utilities
+- idf
+manifest_hash: 287124b1d20c0f98ed6a958ea5b55efaed78415f279b8a82d7299f94eb044dd3
+target: esp32c3
+version: 3.0.0

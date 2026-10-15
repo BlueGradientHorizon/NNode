@@ -8,7 +8,7 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "nvs.h"
-#include "lwip/apps/sntp.h"
+#include "esp_sntp.h"
 #include "wifi.h"
 #include "net.h"
 #include "files.h"
@@ -286,23 +286,23 @@ void nnode_ntp_apply(void)
     int en = 0;
     char srvs[NNODE_NTP_MAX][NNODE_NTP_SRV_LEN];
     int i, n;
-    sntp_stop();
+    esp_sntp_stop();
     n = nnode_ntp_get(&en, srvs, NNODE_NTP_MAX);
-#if SNTP_MAX_SERVERS < NNODE_NTP_MAX
-    if (n > SNTP_MAX_SERVERS) {
-        n = SNTP_MAX_SERVERS;
+#if CONFIG_LWIP_SNTP_MAX_SERVERS < NNODE_NTP_MAX
+    if (n > CONFIG_LWIP_SNTP_MAX_SERVERS) {
+        n = CONFIG_LWIP_SNTP_MAX_SERVERS;
     }
 #endif
     if (!en || n <= 0) {
         ESP_LOGI(TAG, "ntp off");
         return;
     }
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
     for (i = 0; i < n; i++) {
         snprintf(s_srv[i], sizeof(s_srv[i]), "%s", srvs[i]);
-        sntp_setservername((u8_t)i, s_srv[i]);
+        esp_sntp_setservername(i, s_srv[i]);
     }
-    sntp_init();
+    esp_sntp_init();
     ESP_LOGI(TAG, "ntp on (%d servers)", n);
 }
 
@@ -313,8 +313,8 @@ void nnode_ntp_sync_now(void)
     if (!en) {
         return;
     }
-    sntp_stop();
-    sntp_init();
+    esp_sntp_stop();
+    esp_sntp_init();
 }
 
 int nnode_ntp_synced(void)
@@ -327,7 +327,7 @@ int nnode_ntp_synced(void)
         return 0;
     }
     for (i = 0; i < n; i++) {
-        if (sntp_getreachability((u8_t)i)) {
+        if (esp_sntp_getreachability(i)) {
             return 1;
         }
     }

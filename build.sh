@@ -1,31 +1,37 @@
 #!/bin/bash
 # Build (and optionally flash) the nnode firmware for a given board target.
 #
-# Run ON THE VM (ssh ubuntu-vm), never on Windows:
-#   cd /media/sf_esp32c3/NNode && ./build.sh [target] [action]
+#   ./build.sh <target> <action>
 #
-#   target  board in boards/<target>/ (default: esp32c3)
-#   action  build|flash|monitor|clean (default: build)
+#   target  board in boards/<target>/ (e.g. esp32c3)
+#   action  build|flash|monitor|clean
 #
 # What it does:
 #   1. src_web/* --web_inline.py--> src_web/inlined/index.html
 #      + main/page/index.html.gz (the whole SPA in one file,
 #      page copy baked into firmware via EMBED_FILES)
 #   2. idf.py build|flash in build-<target>/ with
-#      boards/<target>/sdkconfig (ESP-IDF v5.5.5)
+#      boards/<target>/sdkconfig (ESP-IDF v6.1)
 #
 # Never runs erase_flash: the storage partition (/data) must survive reflashes.
 set -e
 cd "$(dirname "$0")"
 
-TARGET="${1:-esp32c3}"
-ACTION="${2:-build}"
+TARGET="$1"
+ACTION="$2"
 BOARD_DIR="boards/$TARGET"
 BUILD_DIR="build-$TARGET"
 SDKCONFIG="$BOARD_DIR/sdkconfig"
 DEFAULTS="sdkconfig.defaults;$BOARD_DIR/sdkconfig.defaults"
 
-PORT="${PORT:-/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_D8:3B:DA:34:B0:84-if00}"
+PORT="${PORT:-/dev/ttyACM0}"
+
+if [ -z "$TARGET" ] || [ -z "$ACTION" ]; then
+  echo "usage: $0 <target> <action>" >&2
+  echo "  target  board in boards/<target>/ (e.g. esp32c3)" >&2
+  echo "  action  build|flash|monitor|clean" >&2
+  exit 1
+fi
 
 if [ ! -d "$BOARD_DIR" ]; then
   echo "unknown target '$TARGET' (no $BOARD_DIR directory)" >&2
@@ -61,7 +67,9 @@ case "$ACTION" in
     rm -rf "$BUILD_DIR"
     ;;
   *)
-    echo "usage: $0 [target] [build|flash|monitor|clean]" >&2
+    echo "usage: $0 <target> <action>" >&2
+    echo "  target  board in boards/<target>/ (e.g. esp32c3)" >&2
+    echo "  action  build|flash|monitor|clean" >&2
     exit 1
     ;;
 esac
