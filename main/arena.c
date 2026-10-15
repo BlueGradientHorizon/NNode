@@ -234,7 +234,8 @@ static hnode_t *find_node(void *ptr, int *slot_out)
 }
 
 /* Wrappers below are exported to ELF modules under the plain libc/FreeRTOS
- * names by nnode_resolver. Firmware code itself keeps calling the real
+ * names by nnode_arena_resolve (first link of the resolver chain in
+ * modsym.c). Firmware code itself keeps calling the real
  * functions (wrappers have the nnode_ prefix), so no recursion. */
 
 void *nnode_malloc(size_t n)
@@ -520,7 +521,14 @@ int nnode_arena_kill_tasks(int slot)
     return n;
 }
 
-static uintptr_t nnode_resolver(const char *name)
+/* Resolve the 8 wrapped names to the nnode_ wrappers above. Called FIRST
+ * by the single symbol resolver (see modsym.c): the wrappers must shadow
+ * the same-named raw firmware symbols in the modsym table, otherwise module
+ * tasks and mallocs escape per-slot tracking - stop/unload then leak, and
+ * a surviving task keeps running freed IRAM until the next run reuses
+ * the heap (Instruction access fault, reboot). Returns 0 for anything
+ * else - the chain continues in modsym.c. */
+uintptr_t nnode_arena_resolve(const char *name)
 {
     if (!name) {
         return 0;
@@ -549,7 +557,7 @@ static uintptr_t nnode_resolver(const char *name)
     if (!strcmp(name, "vTaskDelete")) {
         return (uintptr_t)nnode_vTaskDelete;
     }
-    return elf_find_sym_default(name);
+    return 0;
 }
 
 void nnode_arena_init(void)
@@ -557,7 +565,8 @@ void nnode_arena_init(void)
     static int done = 0;
     if (!done) {
         done = 1;
-        elf_set_symbol_resolver(nnode_resolver);
-        ESP_LOGI(TAG, "resolver installed (malloc/free/tasks tracked per slot)");
+        /* No elf_set_symbol_resolver here: modsym.c installs the single
+         * chained resolver (arena -> modsym table -> loader defaults). */
+        ESP_LOGI(TAG, "arena ready (wrappers resolve via the modsym chain)");
     }
 }

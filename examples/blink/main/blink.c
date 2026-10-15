@@ -1,6 +1,6 @@
 /* NNode ELF module example: blinker for ESP32-C3.
  *
- * Build: ../build.sh esp32c3 build blink  ->
+ * Build: ../build.py esp32c3 build blink  ->
  *   build-<target>/modules/blink/blink.app.elf
  * Upload:  POST /api/files/upload?name=blink.elf  (raw .app.elf bytes)
  * Run:     POST /api/elf/run?name=blink.elf

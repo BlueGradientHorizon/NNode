@@ -34,12 +34,12 @@ for the frontend build:
 ```sh
 pip install rjsmin rcssmin
 python3 tools/web_inline.py
-./build.sh esp32c3 build
-./build.sh esp32c3 flash   # needs the board on /dev/ttyACM0, see PORT in build.sh
+./build.py esp32c3 build
+./build.py esp32c3 flash   # needs the board on /dev/ttyACM0, see PORT in build.py
 ```
 
-`build.sh` takes the board as its first argument (`./build.sh [target]
-[action]`, defaults: `esp32c3 build`). Each target builds in its own
+`build.py` takes the board and the action as explicit arguments
+(`./build.py <target> <action>`). Each target builds in its own
 `build-<target>/` directory with its own `boards/<target>/sdkconfig`, so
 switching boards never forces a full rebuild of the other one.
 
@@ -60,7 +60,7 @@ Only `esp32c3` is supported for now. Everything board-specific lives in
 generated `sdkconfig`); shared Kconfig defaults stay in the root
 `sdkconfig.defaults`. To add a board, copy `boards/esp32c3` to
 `boards/<target>`, adjust flash size and partitions, then run
-`./build.sh <target> build` - the first build runs `set-target`
+`./build.py <target> build` - the first build runs `set-target`
 automatically and writes a fresh `boards/<target>/sdkconfig` from
 the defaults.
 
@@ -139,13 +139,13 @@ NNode/
                   gen_modsym.py (ELF module symbol table)
   main/           firmware: REST API, WiFi, NVS settings, LittleFS, ELF runner
   examples/       loadable ELF module sources (blink for esp32c3);
-                  built via examples/build.sh <target> build <app> into
+                  built via examples/build.py <target> <action> <app> into
                   build-<target>/modules/, nothing generated inside
   main/page/      generated index.html.gz, embedded into the firmware
   boards/         per-board files: partitions.csv, sdkconfig.defaults,
                   sdkconfig (generated from the defaults, not committed)
   sdkconfig.defaults  Kconfig defaults shared by all boards
-  build.sh        build/flash helper: ./build.sh <target> <action>
+  build.py        build/flash helper: ./build.py <target> <action>
 ```
 
 `build-*/`, `managed_components/`, `src_web/inlined/` and

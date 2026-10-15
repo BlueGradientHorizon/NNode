@@ -1,5 +1,6 @@
 #pragma once
 #include <stddef.h>
+#include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -19,6 +20,7 @@
 #define NNODE_ARENA_HEAP_QUOTA (32u * 1024u)
 
 void nnode_arena_init(void);
+uintptr_t nnode_arena_resolve(const char *name);
 int nnode_arena_alloc(int slot);
 int nnode_arena_free_slot(int slot);
 int nnode_arena_set_active(int slot);

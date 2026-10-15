@@ -632,10 +632,18 @@ uintptr_t nnode_sym_resolve(const char *name)
 typedef uintptr_t (*nnode_symbol_resolver_fn)(const char *sym_name);
 extern void elf_set_symbol_resolver(nnode_symbol_resolver_fn resolver);
 extern uintptr_t elf_find_sym_default(const char *sym_name);
+extern uintptr_t nnode_arena_resolve(const char *sym_name);
 
+/* Single resolver chain: arena wrappers first (they shadow the same-named
+ * raw firmware symbols in the table below), then the modsym table, then
+ * the loader defaults. */
 static uintptr_t nnode_resolver(const char *name)
 {
-    uintptr_t addr = nnode_sym_resolve(name);
+    uintptr_t addr = nnode_arena_resolve(name);
+    if (addr) {
+        return addr;
+    }
+    addr = nnode_sym_resolve(name);
     if (addr) {
         return addr;
     }

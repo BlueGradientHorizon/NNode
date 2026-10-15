@@ -55,7 +55,7 @@ jobs:
           . "${IDF_PATH:-/opt/esp/idf}/export.sh" > /dev/null
           python -m pip install -q rjsmin rcssmin
       - name: Build firmware
-        run: ./build.sh '${{ matrix.target }}' build
+        run: python3 build.py '${{ matrix.target }}' build
       - name: Rename artifact
         id: rename
         run: |
