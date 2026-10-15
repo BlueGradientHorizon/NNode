@@ -209,7 +209,18 @@ int nnode_net_json(char *buf, size_t len)
     snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ni.ip));
     snprintf(mask, sizeof(mask), IPSTR, IP2STR(&ni.netmask));
     snprintf(gw, sizeof(gw), IPSTR, IP2STR(&ni.gw));
-    snprintf(cidr, sizeof(cidr), "%s/%d", ip, prefix_len(ni.netmask.addr));
+    {
+        /* prefix_len() yields 0..32 by construction; clamp so the
+         * compiler can prove "%s/%d" (max 15+1+2 chars) fits cidr[20]. */
+        int plen = prefix_len(ni.netmask.addr);
+        if (plen < 0) {
+            plen = 0;
+        }
+        if (plen > 32) {
+            plen = 32;
+        }
+        snprintf(cidr, sizeof(cidr), "%s/%d", ip, plen);
+    }
     snprintf(dns, sizeof(dns), "-");
     if (sta) {
         esp_netif_dns_info_t di;

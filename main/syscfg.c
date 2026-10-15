@@ -299,7 +299,9 @@ void nnode_ntp_apply(void)
     }
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
     for (i = 0; i < n; i++) {
-        snprintf(s_srv[i], sizeof(s_srv[i]), "%s", srvs[i]);
+        /* Same-size copy; precision cap lets the compiler prove it fits. */
+        snprintf(s_srv[i], sizeof(s_srv[i]), "%.*s",
+            (int)sizeof(s_srv[i]) - 1, srvs[i]);
         esp_sntp_setservername(i, s_srv[i]);
     }
     esp_sntp_init();
