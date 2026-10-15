@@ -1,0 +1,20 @@
+# ESP-IDF build output (per-target build-<target>/ dirs)
+build*/
+managed_components/
+
+# Local build config, may hold real WiFi credentials - never commit.
+# Fresh clones build from sdkconfig.defaults instead.
+sdkconfig
+sdkconfig.old
+
+# Generated web UI bundle (built by web_inline.py)
+src_web/inlined/
+main/page/
+
+# Editors and OS noise
+__pycache__/
+.vscode/
+*.code-workspace
+Thumbs.db
+.DS_Store
+*~

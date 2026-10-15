@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NNode</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1>NNode</h1>
+    <nav id="sections"></nav>
+  </div>
+</header>
+<main id="content">
+  <section id="page-status-overview" hidden>
+    <h2 data-i18n="p_overview">Обзор</h2>
+    <p class="descr" data-i18n="d_overview">Состояние устройства одним взглядом.</p>
+    <div class="ov-sec">
+      <div class="ov-head"><h3 data-i18n="ov_system">Система</h3><button class="btn ov-toggle" type="button" data-body="ov-body-system">Hide</button></div>
+      <div id="ov-body-system"><table class="ov"><tbody id="ov-system-body"></tbody></table></div>
+    </div>
+    <div class="ov-sec">
+      <div class="ov-head"><h3 data-i18n="ov_memory">Память</h3><button class="btn ov-toggle" type="button" data-body="ov-body-memory">Hide</button></div>
+      <div id="ov-body-memory"><table class="ov"><tbody id="ov-mem-body"></tbody></table></div>
+    </div>
+    <div class="ov-sec">
+      <div class="ov-head"><h3 data-i18n="ov_storage">Хранилище</h3><button class="btn ov-toggle" type="button" data-body="ov-body-storage">Hide</button></div>
+      <div id="ov-body-storage"><table class="ov"><tbody id="ov-storage-body"></tbody></table>
+        <h3 data-i18n="parts">Разделы flash</h3>
+        <div id="parts-bar" class="pbar"></div>
+        <div id="parts-legend"></div>
+      </div>
+    </div>
+    <div class="ov-sec">
+      <div class="ov-head"><h3 data-i18n="ov_network">Сеть</h3><button class="btn ov-toggle" type="button" data-body="ov-body-network">Hide</button></div>
+      <div id="ov-body-network"><table class="ov"><tbody id="ov-net-body"></tbody></table></div>
+    </div>
+  </section>
+  <section id="page-status-channels" hidden>
+    <h2 data-i18n="p_channels">Анализ каналов</h2>
+    <p><button id="chan-refresh" class="btn btn-primary" type="button" data-i18n="ch_refresh">Обновить каналы</button></p>
+    <div id="chan-spec"></div>
+    <table class="table"><thead><tr>
+      <th data-i18n="col_signal">Сигнал</th><th>SSID</th><th data-i18n="channel">Канал</th>
+      <th data-i18n="ch_width">Ширина канала</th><th data-i18n="ch_mode">Режим</th><th>BSSID</th>
+    </tr></thead><tbody id="chan-body"></tbody>    </table>
+  </section>
+  <section id="page-status-graphs" hidden>
+    <h2 data-i18n="p_graphs">Графики</h2>
+    <p class="descr" data-i18n="d_graphs">Нагрузка за последние минуты.</p>
+    <div class="g-tabs" id="g-tabs">
+      <button class="g-tab" type="button" data-g="cpu" data-i18n="g_cpu">CPU</button>
+      <button class="g-tab" type="button" data-g="heap" data-i18n="g_heap">Heap</button>
+      <button class="g-tab" type="button" data-g="net" data-i18n="g_traffic">Трафик</button>
+    </div>
+    <h3 id="g-title">CPU</h3>
+    <div id="g-graph"></div>
+    <p id="g-caption" class="g-caption"></p>
+    <table class="g-stats"><tbody id="g-stats-body"></tbody></table>
+  </section>
+  <section id="page-status-processes" hidden>
+    <h2 data-i18n="p_processes">Процессы</h2>
+    <p class="descr" data-i18n="d_processes">Задачи FreeRTOS и их состояние.</p>
+    <table class="table">
+      <thead><tr>
+        <th data-i18n="col_name">Имя</th>
+        <th data-i18n="col_state">Состояние</th>
+        <th data-i18n="col_prio">Приоритет</th>
+        <th data-i18n="col_stack">Стек своб.</th>
+        <th data-i18n="col_cpu">CPU %</th>
+        <th data-i18n="col_core">Ядро</th>
+      </tr></thead>
+      <tbody id="tasks-body"></tbody>
+    </table>
+  </section>
+  <section id="page-status-log" hidden>
+    <h2 data-i18n="p_log">Системный лог</h2>
+    <p class="descr" data-i18n="d_log">Последние сообщения прошивки.</p>
+    <p><select id="log-level">
+      <option value="V" data-i18n="log_all">Все</option>
+      <option value="D">Debug</option>
+      <option value="I">Info</option>
+      <option value="W">Warning</option>
+      <option value="E">Error</option>
+    </select>
+    <button id="log-clear" class="btn" type="button" data-i18n="log_clear">Очистить</button></p>
+    <pre id="log-out"></pre>
+  </section>
+  <section id="page-system-system" hidden>
+    <h2 data-i18n="p_system">Система</h2>
+    <p class="descr" data-i18n="d_system">Время, железо, разделы flash.</p>
+    <h3 data-i18n="sys_props">Свойства системы</h3>
+    <div class="g-tabs" id="s-tabs">
+      <button class="g-tab" type="button" data-s="general" data-i18n="s_general">Основные настройки</button>
+      <button class="g-tab" type="button" data-s="timesync" data-i18n="s_timesync">Синхронизация времени</button>
+      <button class="g-tab" type="button" data-s="lang" data-i18n="s_lang">Язык и стиль</button>
+    </div>
+    <div id="s-pane-general">
+      <div class="frm">
+        <div class="frm-row"><span class="flab" data-i18n="time">Время</span><div class="fval">
+          <p id="sys-time">...</p>
+          <p><button id="time-sync" class="btn btn-primary" type="button" data-i18n="sync_browser">Синхронизировать с браузером</button>
+            <button id="ntp-sync" class="btn btn-primary" type="button" data-i18n="ntp_go">Синхронизировать с NTP-сервером</button></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="sys_hostname">Имя хоста</span><div class="fval">
+          <p><input id="host-input" type="text" size="16" maxlength="32"></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="tz_label">Часовой пояс</span><div class="fval">
+          <p><select id="tz-select"></select></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="timefmt">Формат времени</span><div class="fval">
+          <p><select id="timefmt-select">
+            <option value="24" data-i18n="fmt24">24 часа</option>
+            <option value="12" data-i18n="fmt12">12 часов</option>
+          </select></p>
+        </div></div>
+      </div>
+    </div>
+    <div id="s-pane-timesync" hidden>
+      <div class="frm">
+        <div class="frm-row"><span class="flab" data-i18n="ntp_enable">Включить NTP</span><div class="fval">
+          <p><input id="ntp-en" type="checkbox"></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="ntp_servers">Серверы</span><div class="fval">
+          <div id="ntp-list"></div>
+          <div class="ntp-row"><input id="ntp-add" type="text" size="28" placeholder="pool.ntp.org">
+            <button id="ntp-plus" class="btn add" type="button">+</button></div>
+          <p id="ntp-status">...</p>
+        </div></div>
+      </div>
+    </div>
+    <div id="s-pane-lang" hidden>
+      <div class="frm">
+        <div class="frm-row"><span class="flab" data-i18n="lang_title">Язык</span><div class="fval">
+          <p><select id="lang-select">
+            <option value="auto" data-i18n="l_auto">Авто</option>
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+          </select></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="design">Дизайн</span><div class="fval">
+          <p><select disabled><option data-i18n="design_sys">Системный</option></select></p>
+        </div></div>
+      </div>
+    </div>
+    <div class="savebar"><span id="save-msg"></span><button id="sys-save" class="btn btn-primary" type="button" data-i18n="save">Сохранить</button></div>
+  </section>
+  <section id="page-system-reboot" hidden>
+    <h2 data-i18n="p_reboot">Перезагрузка</h2>
+    <p class="descr" data-i18n="d_reboot">Перезагружает операционную систему устройства.</p>
+    <p><button id="do-reboot" class="btn btn-danger" type="button" data-i18n="rb_go">Выполнить перезагрузку</button></p>
+    <p id="reboot-msg"></p>
+  </section>
+  <section id="page-system-backup" hidden>
+    <h2 data-i18n="flash_ops">Операции с прошивкой</h2>
+    <h3 data-i18n="bk_title">Резервная копия</h3>
+    <p class="descr" data-i18n="bk_hint">Нажмите «Создать файл бэкапа», затем скачайте его.</p>
+    <div class="frm">
+      <div class="frm-row"><span class="flab" data-i18n="bk_dl">Скачать бэкап</span><div class="fval">
+        <p><button id="bk-dl" class="btn btn-primary" type="button" data-i18n="bk_dl">Скачать файл бэкапа</button>
+          <span id="bk-msg"></span></p>
+      </div></div>
+    </div>
+    <h3 data-i18n="bk_restore_h">Восстановление</h3>
+    <p class="descr" data-i18n="bk_rst_hint">Загрузите ранее созданный файл бэкапа. Для сброса прошивки к начальному состоянию нажмите «Выполнить сброс».</p>
+    <div class="frm">
+      <div class="frm-row"><span class="flab" data-i18n="bk_reset_row">Сброс к начальным</span><div class="fval">
+        <p><button id="fr-go" class="btn btn-danger" type="button" data-i18n="fr_go">Выполнить сброс</button>
+          <span id="fr-msg"></span></p>
+      </div></div>
+      <div class="frm-row"><span class="flab" data-i18n="bk_up_row">Восстановить бэкап</span><div class="fval">
+        <p><input id="bk-pick" type="file" hidden>
+          <button id="bk-up2" class="btn btn-primary" type="button" data-i18n="bk_up">Загрузить архив...</button>
+          <span id="bk-up-msg"></span></p>
+        <p class="descr" data-i18n="bk_note">Восстановление полностью заменяет /data и перезагружает плату.</p>
+      </div></div>
+    </div>
+  </section>
+  <section id="page-programs" hidden>
+    <h2 data-i18n="p_modules">Программы</h2>
+    <p class="descr" data-i18n="d_modules">ELF-модули в /data: запуск и завершение.</p>
+    <p><span id="modules-msg"></span></p>
+    <table class="table"><thead><tr>
+      <th data-i18n="col_name">Имя</th>
+      <th data-i18n="col_size">Размер</th>
+      <th data-i18n="col_state">Состояние</th>
+      <th></th>
+    </tr></thead><tbody id="modules-body"></tbody></table>
+  </section>
+  <section id="page-network-interfaces" hidden>
+    <h2 data-i18n="p_interfaces">Интерфейсы</h2>
+    <p class="descr" data-i18n="d_interfaces">Подключения STA и точки доступа.</p>
+    <h3 data-i18n="if_title">Interfaces</h3>
+    <div id="iface-list"></div>
+    <p class="descr" data-i18n="if_noadd">Плата держит только два интерфейса (STA и AP), новые не создаются.</p>
+  </section>
+  <section id="page-network-routes" hidden>
+    <h2 data-i18n="p_routes">Маршруты</h2>
+    <p class="descr" data-i18n="d_routes">Куда плата отправляет пакеты.</p>
+    <table class="table"><thead><tr>
+      <th data-i18n="rt_dst">Назначение</th><th data-i18n="rt_gw">Шлюз</th><th data-i18n="rt_iface">Интерфейс</th>
+    </tr></thead><tbody id="routes-body"></tbody></table>
+  </section>
+  <section id="page-network-wireless" hidden>
+    <h2 data-i18n="p_wireless">Беспроводная сеть</h2>
+    <p class="descr" data-i18n="d_wireless">Радио, точка доступа и сканирование эфира.</p>
+    <h3 data-i18n="wl_overview">Wireless Overview</h3>
+    <div id="wl-radio"></div>
+    <div id="wl-nets"></div>
+    <h3><span data-i18n="wl_assoc">Associated Stations</span> <span id="stations-msg" class="descr"></span></h3>
+    <table class="table"><thead><tr>
+      <th data-i18n="wl_network">Network</th><th data-i18n="col_mac">MAC address</th><th data-i18n="wl_host">Host</th>
+      <th data-i18n="wl_signal">Signal / Noise</th><th data-i18n="wl_rate">RX Rate / TX Rate</th><th></th>
+    </tr></thead><tbody id="stations-body"></tbody></table>
+  </section>
+  <section id="page-network-diagnostics" hidden>
+    <h2 data-i18n="p_diagnostics">Диагностика</h2>
+    <p class="descr" data-i18n="d_diagnostics">Проверка связи с другими узлами сети.</p>
+    <div class="diag-row">
+      <div class="diag-col">
+        <p class="ping-row"><input id="ping-host" type="text" size="16" value="192.168.1.1" placeholder="host"><input id="ping-count" class="num" type="text" size="3" value="4" placeholder="count"><input id="ping-interval" class="num" type="text" size="5" value="1000" placeholder="ms"></p>
+        <p><button id="ping-go" class="btn btn-primary" type="button" data-i18n="diag_ping">IPv4 Ping</button></p>
+      </div>
+      <div class="diag-col">
+        <p><input id="trace-host" type="text" size="16" value="openwrt.org"></p>
+        <p><button id="trace-go" class="btn btn-primary" type="button" data-i18n="diag_trace">IPv4 Traceroute</button></p>
+      </div>
+      <div class="diag-col">
+        <p><input id="ns-host" type="text" size="16" value="openwrt.org"></p>
+        <p><button id="ns-go" class="btn btn-primary" type="button" data-i18n="diag_ns">Nslookup</button></p>
+      </div>
+    </div>
+    <pre id="diag-out"></pre>
+  </section>
+  <section id="page-files" hidden>
+    <h2 data-i18n="p_files">Файлы</h2>
+    <p class="descr" data-i18n="d_files">Файлы в разделе /data.</p>
+    <p><input id="file-pick" type="file">
+       <button id="file-upload" class="btn btn-primary" type="button" data-i18n="upload">Загрузить</button>
+       <span id="files-msg"></span></p>
+    <table class="table"><thead><tr>
+      <th data-i18n="col_name">Имя</th>
+      <th data-i18n="col_size">Размер</th>
+      <th></th>
+    </tr></thead><tbody id="files-body"></tbody></table>
+  </section>
+  <section id="page-console" hidden>
+    <h2 data-i18n="p_console">Консоль</h2>
+    <p class="descr" data-i18n="soon">Скоро</p>
+  </section>
+</main>
+<div id="modal-ov" class="modal-ov" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head"><span id="modal-title"></span></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+<footer>
+  <span id="foot-ver">NNode</span>
+  <span>NNode</span>
+</footer>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

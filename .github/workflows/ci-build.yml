@@ -1,0 +1,69 @@
+name: CI build
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Board to build (empty = every board in boards/)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  list-targets:
+    name: List boards
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.boards.outputs.targets }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Discover boards
+        id: boards
+        env:
+          WANT_TARGET: ${{ inputs.target }}
+        run: |
+          cd boards
+          TARGETS=$(find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+          if [ -n "${WANT_TARGET}" ]; then
+            TARGETS=$(echo "${TARGETS}" | WANT="${WANT_TARGET}" python3 -c 'import json,sys,os; print(json.dumps([t for t in json.load(sys.stdin) if t == os.environ["WANT"]]))')
+          fi
+          if [ "${TARGETS}" = "[]" ]; then
+            echo "no boards match (want='${WANT_TARGET}')" >&2
+            exit 1
+          fi
+          echo "targets=${TARGETS}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: list-targets
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.list-targets.outputs.targets) }}
+    container:
+      image: espressif/idf:release-v5.5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Install frontend deps
+        run: python3 -m pip install -q rjsmin rcssmin || python3 -m pip install -q --break-system-packages rjsmin rcssmin
+      - name: Build firmware
+        run: ./build.sh '${{ matrix.target }}' build
+      - name: Rename artifact
+        id: rename
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          BIN="NNode-${{ matrix.target }}-${SHORT_SHA}.bin"
+          cp "build-${{ matrix.target }}/nnode.bin" "${BIN}"
+          echo "bin=${BIN}" >> "${GITHUB_OUTPUT}"
+      - name: Upload firmware
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.rename.outputs.bin }}
+          path: ${{ steps.rename.outputs.bin }}
+          if-no-files-found: error
