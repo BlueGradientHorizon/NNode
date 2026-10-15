@@ -51,7 +51,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
       - name: Install frontend deps
-        run: python3 -m pip install -q rjsmin rcssmin || python3 -m pip install -q --break-system-packages rjsmin rcssmin
+        run: |
+          . "${IDF_PATH:-/opt/esp/idf}/export.sh" > /dev/null
+          python -m pip install -q rjsmin rcssmin
       - name: Build firmware
         run: ./build.sh '${{ matrix.target }}' build
       - name: Rename artifact
