@@ -123,6 +123,8 @@ table.ov td { border-bottom: 1px solid var(--border-soft);
   padding: 6px 10px; text-align: left; vertical-align: top; }
 table.ov td:first-child { width: 35%; }
 .ov-val { margin-bottom: 3px; }
+#files-space { margin: 8px 0 12px 0; }
+#files-space-text { margin-bottom: 3px; }
 .ov-bar { background: var(--track); border: 1px solid var(--border);
   border-radius: 3px; height: 10px; }
 .ov-fill { background: #5bc0de; height: 100%; width: 0%; }
@@ -192,7 +194,6 @@ table.g-stats td { border-bottom: 1px solid var(--border-soft);
   gap: 8px; background: var(--bg-soft);
   border-top: 1px solid var(--border-soft);
   padding: 8px 12px; margin-top: 12px; }
-.savebar #save-msg { color: var(--muted); }
 .sigbars { display: inline-flex; align-items: flex-end; gap: 1px;
   vertical-align: -2px; margin-right: 4px; }
 .sigbars i { width: 3px; background: var(--track); border: 1px solid
@@ -236,11 +237,12 @@ table.g-stats td { border-bottom: 1px solid var(--border-soft);
   border-radius: 3px; background: var(--bg-soft); padding: 4px 12px;
   text-align: center; font-size: 12px; max-width: 220px; }
 .wl-title { font-weight: bold; font-size: 1.05em; }
-.modal-ov { position: fixed; inset: 0; z-index: 100;
-  background: rgba(0, 0, 0, 0.55); display: flex;
-  align-items: flex-start; justify-content: center;
-  padding: 60px 12px 12px 12px; }
+.modal-ov { position: fixed; inset: 0; z-index: 100; }
 .modal-ov[hidden] { display: none; }
+.modal-layer { position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.55); display: flex;
+  justify-content: center; align-items: flex-start;
+  padding: 60px 12px 12px 12px; }
 .modal { background: var(--card); color: var(--text);
   border: 1px solid var(--border); border-radius: 4px;
   width: 100%; max-width: 720px; max-height: 80vh;
@@ -267,3 +269,15 @@ table.g-stats td { border-bottom: 1px solid var(--border-soft);
 .diag-col input.num { flex: none; }
 .diag-col #ping-count { width: 6ch; }
 .diag-col #ping-interval { width: 6ch; }
+.toast-ov { position: fixed; inset: 0; z-index: 200;
+  background: rgba(0, 0, 0, 0.35); display: flex;
+  align-items: center; justify-content: center;
+  padding: 12px; }
+.toast-ov[hidden] { display: none; }
+.toast { background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 22px; font-size: 14px; text-align: center;
+  max-width: 80vw;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+.toast.ok { border-color: var(--ok); }
+.toast.err { border-color: var(--danger); }

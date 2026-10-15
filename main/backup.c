@@ -264,7 +264,7 @@ int nnode_backup_restore_stream(cbor_read_fn read, void *ctx, int total_len,
         return -1;
     }
     if (cbor_r_init(&r, read, ctx, total_len)) {
-        snprintf(err, errlen, "no mem");
+        snprintf(err, errlen, "no_mem");
         return -1;
     }
     memset(nets, 0, sizeof(nets));

@@ -97,11 +97,11 @@ static int prefix_len(uint32_t mask_be)
     return n;
 }
 
-/* Честный per-iface учет пакетов: оборачиваем input/linkoutput lwIP
- * netif каждого интерфейса и считаем реальные проходящие пакеты.
- * Глобальные lwip_stats так не умеют (они суммарные), а других
- * per-iface счетчиков ни lwIP, ни WiFi-драйвер не дают. Счетчики
- * накопительные с загрузки, как Pkts. в OpenWrt. */
+/* Honest per-iface packet accounting: wrap the lwIP netif
+ * input/linkoutput of each interface and count real passing packets.
+ * Global lwip_stats cannot do that (they are totals), and neither lwIP
+ * nor the WiFi driver provides other per-iface counters. Counters are
+ * cumulative since boot, like Pkts. in OpenWrt. */
 typedef err_t (*tap_in_fn)(struct pbuf *p, struct netif *nf);
 typedef err_t (*tap_out_fn)(struct netif *nf, struct pbuf *p);
 
@@ -149,8 +149,8 @@ void nnode_net_taps_install(void)
             continue;
         }
         l = esp_netif_get_netif_impl(ifs[i]);
-        /* указатели живут пока жив esp_netif (создается один раз),
-         * рестарт WiFi их не меняет, повторная обертка не нужна */
+        /* pointers live as long as esp_netif (created once),
+         * a WiFi restart does not change them, no need to re-wrap */
         if (!l || !l->input || !l->linkoutput || l->input == tap_input) {
             continue;
         }
@@ -230,8 +230,8 @@ int nnode_net_json(char *buf, size_t len)
             snprintf(dns, sizeof(dns), IPSTR, IP2STR(&di.ip.u_addr.ip4));
         }
     }
-    /* Драйвер может переназначать input/linkoutput при старте WiFi,
-     * поэтому переустановка здесь: идемпотентна, чинит любой порядок. */
+    /* The driver may reassign input/linkoutput at WiFi start,
+     * so reinstall here: idempotent, fixes any order. */
     nnode_net_taps_install();
     o = 0;
     {
@@ -500,11 +500,11 @@ out:
 #define TRACE_HOPS 20
 #define TRACE_TIMEOUT_MS 1200
 #define TRACE_PORT 33434
-#define TRACE_DATA_LEN 18 /* 20 IP + 8 UDP + 18 = 46 байт, как в эталоне */
+#define TRACE_DATA_LEN 18 /* 20 IP + 8 UDP + 18 = 46 bytes, as in the reference */
 
-/* Traceroute по-классике: UDP на закрытый порт с растущим TTL,
- * ответы ловим ICMP raw-сокетом (11 = превышен TTL, 3 = дошли).
- * Вложенный пакет сверяем (наш UDP на наш порт), чужое игнорируем. */
+/* Classic traceroute: UDP to a closed port with increasing TTL,
+ * replies caught with an ICMP raw socket (11 = TTL exceeded, 3 = reached).
+ * The enclosed packet is matched (our UDP to our port), foreign ones ignored. */
 int nnode_net_traceroute(const char *host, nnode_ping_line_fn emit, void *ctx)
 {
     ip_addr_t addr;
@@ -600,14 +600,14 @@ int nnode_net_traceroute(const char *host, nnode_ping_line_fn emit, void *ctx)
                     if (n < off + 20) {
                         continue;
                     }
-                    if (buf[off + 9] != 17) { /* не UDP */
+                    if (buf[off + 9] != 17) { /* not UDP */
                         continue;
                     }
                     ihl2 = (buf[off] & 0x0f) * 4;
                     if (ihl2 < 20 || n < off + ihl2 + 4) {
                         continue;
                     }
-                    /* IPv4-адрес это первые 4 байта ip_addr_t */
+                    /* an IPv4 address is the first 4 bytes of ip_addr_t */
                     if (memcmp(buf + off + 16, &addr, 4) != 0) {
                         continue;
                     }

@@ -144,7 +144,7 @@ int nnode_nets_load(nnode_net_cred_t *out, int max)
         if (unesc_val(item, "ssid", out[n].ssid, sizeof(out[n].ssid)) == 0 &&
             unesc_val(item, "pass", out[n].pass, sizeof(out[n].pass)) == 0 &&
             out[n].ssid[0]) {
-            /* bssid/auth появились позже: у старых записей их нет */
+            /* bssid/auth were added later: old entries lack them */
             if (unesc_val(item, "bssid", out[n].bssid, sizeof(out[n].bssid)) != 0) {
                 out[n].bssid[0] = 0;
             }
@@ -194,8 +194,8 @@ int nnode_nets_save(const nnode_net_cred_t *nets, int n)
     return rc;
 }
 
-/* bssid NULL/"" = любой, auth NULL/"" = "auto".
- * open требует пустой пароль, wpa/wpa2/wpa3 - непустой (до 63). */
+/* bssid NULL/"" = any, auth NULL/"" = "auto".
+ * open requires an empty password, wpa/wpa2/wpa3 a non-empty one (up to 63). */
 static int cred_fix_bssid_auth(nnode_net_cred_t *c, const char *bssid, const char *auth)
 {
     if (bssid && bssid[0]) {

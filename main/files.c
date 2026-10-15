@@ -171,16 +171,16 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
     int r, i, slot;
     char path[80];
     if (!nnode_file_valid(name)) {
-        snprintf(errbuf, errlen, "bad name");
+        snprintf(errbuf, errlen, "bad_name");
         return -1;
     }
     snprintf(path, sizeof(path), "/data/%s", name);
     if (!has_elf_magic(path)) {
-        snprintf(errbuf, errlen, "not an ELF file");
+        snprintf(errbuf, errlen, "not_elf");
         return -1;
     }
     if (nnode_elf_loaded(name)) {
-        snprintf(errbuf, errlen, "already loaded (unload first)");
+        snprintf(errbuf, errlen, "already_loaded");
         return -1;
     }
     size_t exec_free, mem_free;
@@ -194,32 +194,33 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
         }
     }
     if (slot < 0) {
-        snprintf(errbuf, errlen, "no free module slots");
+        snprintf(errbuf, errlen, "no_slots");
         return -1;
     }
     exec_free = heap_caps_get_largest_free_block(MALLOC_CAP_EXEC);
     mem_free = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     if (exec_free < 8192 || mem_free < 24576) {
-        snprintf(errbuf, errlen, "no memory (arena)");
+        snprintf(errbuf, errlen, "no_mem");
         return -1;
     }
     nnode_arena_alloc(slot);
     memset(&f, 0, sizeof(f));
     if (esp_elf_open(&f, name) != 0) {
-        snprintf(errbuf, errlen, "open failed");
+        snprintf(errbuf, errlen, "elf_open");
         nnode_arena_free_slot(slot);
         return -1;
     }
     memset(&elf, 0, sizeof(elf));
     if (esp_elf_init(&elf) != 0) {
-        snprintf(errbuf, errlen, "elf init failed");
+        snprintf(errbuf, errlen, "elf_init");
         esp_elf_close(&f);
         nnode_arena_free_slot(slot);
         return -1;
     }
     r = esp_elf_relocate(&elf, f.payload);
     if (r != 0) {
-        snprintf(errbuf, errlen, "relocate failed (%d)", r);
+        ESP_LOGE(TAG, "relocate %s failed: %d", name, r);
+        snprintf(errbuf, errlen, "elf_relocate");
         esp_elf_deinit(&elf);
         esp_elf_close(&f);
         nnode_arena_free_slot(slot);

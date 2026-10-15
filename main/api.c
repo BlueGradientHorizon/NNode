@@ -19,11 +19,20 @@
 int nnode_api_summary(char *buf, size_t len)
 {
     char ip[16];
+    char idf[16];
     uint64_t fst, fsu;
     uint32_t hfree, htotal;
     multi_heap_info_t mi;
     nnode_net_ip(ip, sizeof(ip));
     nnode_fs_usage(&fst, &fsu);
+    /* esp_get_idf_version() returns a git describe/hash, show the numeric one */
+    if (ESP_IDF_VERSION_PATCH == 0) {
+        snprintf(idf, sizeof(idf), "%d.%d",
+            ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR);
+    } else {
+        snprintf(idf, sizeof(idf), "%d.%d.%d",
+            ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH);
+    }
     memset(&mi, 0, sizeof(mi));
     heap_caps_get_info(&mi, MALLOC_CAP_INTERNAL);
     hfree = (uint32_t)mi.total_free_bytes;
@@ -34,7 +43,7 @@ int nnode_api_summary(char *buf, size_t len)
         "\"mem_used\":%u,\"mem_free\":%u,"
         "\"largest\":%u,\"min\":%u,\"ablocks\":%u,\"fblocks\":%u,"
         "\"fs_blocks\":%llu,\"fs_bfree\":%llu,\"fs_bsize\":1}",
-        esp_get_idf_version(),
+        idf,
         (long long)(esp_timer_get_time() / 1000000),
         ip, (unsigned)(htotal - hfree), (unsigned)hfree,
         (unsigned)mi.largest_free_block, (unsigned)mi.minimum_free_bytes,
@@ -69,6 +78,7 @@ int nnode_api_sys(char *buf, size_t len)
     char ip[16];
     char host[40];
     char mac[18];
+    char idf[16];
     esp_chip_info_t ci;
     const esp_app_desc_t *app;
     const char *model, *arch, *reset;
@@ -85,6 +95,13 @@ int nnode_api_sys(char *buf, size_t len)
     gettimeofday(&tv, NULL);
     nnode_fs_usage(&fst, &fsu);
     nnode_hostname_get(host, sizeof(host));
+    if (ESP_IDF_VERSION_PATCH == 0) {
+        snprintf(idf, sizeof(idf), "%d.%d",
+            ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR);
+    } else {
+        snprintf(idf, sizeof(idf), "%d.%d.%d",
+            ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH);
+    }
     switch (ci.model) {
     case CHIP_ESP32: model = "ESP32"; arch = "Xtensa LX6"; break;
     case CHIP_ESP32S2: model = "ESP32-S2"; arch = "Xtensa LX7"; break;
@@ -128,7 +145,7 @@ int nnode_api_sys(char *buf, size_t len)
         "\"chip_rev\":%d,\"cores\":%d,\"fs_total\":%llu,\"fs_used\":%llu,"
         "\"hostname\":\"%s\",\"model\":\"%s\",\"arch\":\"%s\",\"target\":\"espressif/%s\","
         "\"flash_mb\":%u,\"mac\":\"%s\",\"reset\":\"%s\",\"partitions\":[",
-        app->version, esp_get_idf_version(),
+        app->version, idf,
         (long long)(esp_timer_get_time() / 1000000), (long long)tv.tv_sec, ip, nnode_net_rssi(),
         (unsigned)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, nnode_temp(),
         (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),

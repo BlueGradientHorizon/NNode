@@ -251,8 +251,8 @@ void nnode_wifi_start(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_sta = esp_netif_create_default_wifi_sta();
     s_ap = esp_netif_create_default_wifi_ap();
-    /* Per-iface счетчики пакетов: обернуть input/linkoutput lwIP netif
-     * нужно до старта WiFi, дальше указатели уже не меняются. */
+    /* Per-iface packet counters: wrap the lwIP netif input/linkoutput
+     * before WiFi starts, the pointers never change after that. */
     nnode_net_taps_install();
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL, NULL));

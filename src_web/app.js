@@ -1,4 +1,4 @@
-/* Вложенные роуты #/section/page, опрос /api/*. */
+/* Nested routes #/section/page, /api/* polling. */
 (function () {
   function storedLang() { return localStorage.getItem("lang") || "auto"; }
   function lang() {
@@ -95,8 +95,8 @@
     document.querySelectorAll("main section").forEach(function (s) {
       s.hidden = s.id !== pid;
     });
-    /* Опрос только за своим разделом: старый таймер гасится,
-     * новый сразу делает первый запрос и дальше каждые 3 с. */
+    /* Poll only own section: the old timer is stopped,
+     * the new one fires the first request at once, then every 3 s. */
     var pg = sec.pages.indexOf(r.page) >= 0 ? r.page : sec.pages[0];
     setPoll(pollFor(sec.id, pg));
   }
@@ -141,6 +141,7 @@
     };
     if (k === "files/files") return function () {
       get("/api/files", renderAll);
+      get("/api/sys", renderFilesSys);
     };
     return null;
   }
@@ -187,7 +188,7 @@
     fetch(url).then(function (r) {
       if (!r.ok) throw 0;
       return r.json();
-    }).then(ok).catch(function () { /* молчим до следующего опроса */ });
+    }).then(ok).catch(function () { /* stay silent until the next poll */ });
   }
   function ovRow(tb, label, value) {
     var tr = document.createElement("tr");
@@ -273,7 +274,7 @@
         " / gw " + lastNet.gw);
       ovRow(nb, t("ov_ap"), lastNet.ap_up ? "on" : "off");
       (lastNet.ifaces || []).forEach(function (x) {
-        ovRow(nb, x.name, x.ip + " " + x.mac + (x.up ? "" : " (down)"));
+        ovRow(nb, x.name, x.ip + " " + x.mac + (x.up ? "" : " (" + t("down") + ")"));
       });
     }
   }
@@ -358,7 +359,7 @@
     var heap = lastGraphs.heap.map(function (v) { return v / 1024; });
     if (gTab === "heap") {
       return { key: "g_heap",
-        series: [{ data: heap, color: "#1976d2", name: "Heap" }],
+        series: [{ data: heap, color: "#1976d2", name: t("g_heap") }],
         fmt: function (v) { return v.toFixed(0) + " KB"; } };
     }
     if (gTab === "net") {
@@ -474,14 +475,14 @@
     get("/api/ap", function (jj) { lastAp = jj; if (lastNet) renderWlNets(lastNet); });
   }
   function pollSummary() {
-    /* шаткий WiFi/TCP платы: одиночный ретрай через 500 мс */
+    /* Flaky board WiFi/TCP: a single retry after 500 ms */
     fetch("/api/summary").then(function (r) { return r.json(); }).then(function (j) {
       renderSummary(j);
     }).catch(function () {
       setTimeout(function () {
         fetch("/api/summary").then(function (r) { return r.json(); }).then(function (j) {
           renderSummary(j);
-        }).catch(function () { /* молчим до следующего опроса */ });
+        }).catch(function () { /* stay silent until the next poll */ });
       }, 500);
     });
   }
@@ -508,7 +509,7 @@
     }
     return null;
   }
-  function fmtPkts(v) { return Number(v || 0).toLocaleString(lang()) + " Pkts."; }
+  function fmtPkts(v) { return Number(v || 0).toLocaleString(lang()) + " " + t("pkts"); }
   function dispMac(m) { return (!m || m === "00:00:00:00:00:00") ? "-" : m; }
   function macOk(s) { return /^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$/.test(s || ""); }
   function lnRow(info, label, value) {
@@ -546,9 +547,9 @@
       icon.appendChild(sub);
       var info = document.createElement("div");
       info.className = "iface-info";
-      lnRow(info, "Protocol", t("proto_dhcp"));
-      lnRow(info, "Carrier", staUp ? t("present") : t("absent"));
-      lnRow(info, "Uptime", fmtDur(j.sta_uptime || 0));
+      lnRow(info, t("if_protocol"), t("proto_dhcp"));
+      lnRow(info, t("if_carrier"), staUp ? t("present") : t("absent"));
+      lnRow(info, t("if_uptime"), fmtDur(j.sta_uptime || 0));
       lnRow(info, "MAC", staIf ? dispMac(staIf.mac) : "?");
       lnRow(info, "RX", fmtPkts(staIf ? staIf.rx : 0));
       lnRow(info, "TX", fmtPkts(staIf ? staIf.tx : 0));
@@ -587,9 +588,9 @@
       icon.appendChild(sub);
       var info = document.createElement("div");
       info.className = "iface-info";
-      lnRow(info, "Protocol", t("proto_static"));
-      lnRow(info, "Carrier", apUp ? t("present") : t("absent"));
-      lnRow(info, "Uptime", fmtDur(j.ap_uptime || 0));
+      lnRow(info, t("if_protocol"), t("proto_static"));
+      lnRow(info, t("if_carrier"), apUp ? t("present") : t("absent"));
+      lnRow(info, t("if_uptime"), fmtDur(j.ap_uptime || 0));
       lnRow(info, "MAC", apIf ? dispMac(apIf.mac) : "?");
       lnRow(info, "RX", fmtPkts(apIf ? apIf.rx : 0));
       lnRow(info, "TX", fmtPkts(apIf ? apIf.tx : 0));
@@ -637,22 +638,86 @@
     if (a === "wpa_wpa2") return "WPA/WPA2 PSK";
     return a || "?";
   }
+  /* Modal stack: each new modal opens above the open one with its own
+   * dimming layer, 15px lower. closeModal removes the topmost. */
   function openModal(title, bodyEl, footBtns) {
-    document.getElementById("modal-title").textContent = title;
-    var b = document.getElementById("modal-body");
-    b.innerHTML = "";
+    var ov = document.getElementById("modal-ov");
+    var layer = document.createElement("div");
+    layer.className = "modal-layer";
+    layer.style.paddingTop = (60 + ov.children.length * 15) + "px";
+    layer.addEventListener("click", function (e) {
+      if (e.target === layer) closeModal();
+    });
+    var modal = document.createElement("div");
+    modal.className = "modal";
+    modal.setAttribute("role", "dialog");
+    var head = document.createElement("div");
+    head.className = "modal-head";
+    var ht = document.createElement("span");
+    ht.textContent = title;
+    head.appendChild(ht);
+    if (!title) head.style.display = "none";
+    var b = document.createElement("div");
+    b.className = "modal-body";
     b.appendChild(bodyEl);
-    var f = document.getElementById("modal-foot");
-    f.innerHTML = "";
+    var f = document.createElement("div");
+    f.className = "modal-foot";
     (footBtns || []).forEach(function (x) { f.appendChild(x); });
-    document.getElementById("modal-ov").hidden = false;
+    modal.appendChild(head);
+    modal.appendChild(b);
+    modal.appendChild(f);
+    layer.appendChild(modal);
+    ov.appendChild(layer);
+    ov.hidden = false;
   }
   function closeModal() {
-    document.getElementById("modal-ov").hidden = true;
+    var ov = document.getElementById("modal-ov");
+    if (ov.lastChild) ov.lastChild.remove();
+    if (!ov.lastChild) ov.hidden = true;
   }
-  document.getElementById("modal-ov").addEventListener("click", function (e) {
-    if (e.target === this) closeModal();
+  function closeAllModals() {
+    var ov = document.getElementById("modal-ov");
+    ov.innerHTML = "";
+    ov.hidden = true;
+  }
+  /* A question with two buttons: text plus OK/Close */
+  function confirmModal(msg, onYes, yesKey) {
+    var body = document.createElement("div");
+    body.textContent = msg;
+    openModal("", body, [
+      mkbtn(t(yesKey || "confirm_ok"), "btn-primary", function () {
+        closeModal();
+        onYes();
+      }),
+      mkbtn(t("dismiss"), "", closeModal)
+    ]);
+  }
+  var toastTimer = 0;
+  function toast(key, ok) {
+    document.getElementById("toast-msg").textContent = t(key);
+    var box = document.getElementById("toast-box");
+    box.className = "toast" + (ok === true ? " ok" : ok === false ? " err" : "");
+    document.getElementById("toast-ov").hidden = false;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      document.getElementById("toast-ov").hidden = true;
+      toastTimer = 0;
+    }, 1000);
+  }
+  document.getElementById("toast-ov").addEventListener("click", function () {
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = 0;
+    document.getElementById("toast-ov").hidden = true;
   });
+  /* Firmware error code (jj.error) to the err_<code> translation key.
+   * Unknown codes and dropped connections give the generic toast_error. */
+  function toastErr(jj) {
+    var code = jj && typeof jj.error === "string" ? jj.error : "";
+    var key = code ? "err_" + code : "toast_error";
+    var l = lang();
+    if (!I18N[l] || !I18N[l][key]) key = "toast_error";
+    toast(key, false);
+  }
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && !document.getElementById("modal-ov").hidden) closeModal();
   });
@@ -702,18 +767,16 @@
       tr.children[1].appendChild(dot);
       tr.children[1].appendChild(document.createTextNode(x.ssid || "?"));
       tr.children[2].textContent = x.channel;
-      tr.children[3].textContent = "Master";
+      tr.children[3].textContent = t("mode_master");
       tr.children[4].textContent = x.bssid;
       tr.children[5].textContent = x.auth;
       var btn = mkbtn(t("join"), "btn-primary", (function (s) { return function () {
         if (knownNets.indexOf(s) >= 0) {
           staConnect(s, null);
+          closeModal();
         } else {
-          var p = prompt("Password for " + s + ":");
-          if (p === null) return;
-          staConnect(s, p);
+          openJoinModal(s);
         }
-        closeModal();
       }; })(x.ssid));
       tr.children[6].appendChild(btn);
       tb.appendChild(tr);
@@ -722,6 +785,68 @@
   function renderNetWl(j) {
     renderWlOverview(j);
     renderWlNets(j);
+  }
+  /* Joining a new network above the scan window: password plus
+   * an optional bind to the over-the-air BSSID (saves the net at once). */
+  function openJoinModal(ssid) {
+    var si = scanInfo(ssid);
+    var bssid = si && si.bssid ? si.bssid : "";
+    var wrap = document.createElement("div");
+    wrap.className = "frm";
+    function joinRow(label, node) {
+      var r = document.createElement("div");
+      r.className = "frm-row";
+      var lab = document.createElement("span");
+      lab.className = "flab";
+      lab.textContent = label;
+      var val = document.createElement("div");
+      val.className = "fval";
+      var p = document.createElement("p");
+      p.appendChild(node);
+      val.appendChild(p);
+      r.appendChild(lab);
+      r.appendChild(val);
+      wrap.appendChild(r);
+      return r;
+    }
+    var inPass = document.createElement("input");
+    inPass.type = "text"; inPass.size = 20; inPass.maxLength = 63;
+    inPass.placeholder = t("net_keeppass_open");
+    joinRow(t("password"), inPass);
+    var inLock = document.createElement("input");
+    inLock.type = "checkbox"; inLock.checked = false;
+    var labLock = document.createElement("label");
+    labLock.appendChild(inLock);
+    labLock.appendChild(document.createTextNode(" " + t("net_lock_bssid") +
+      (bssid ? " (" + bssid + ")" : "")));
+    var lockRow = joinRow("", labLock);
+    if (!bssid) lockRow.style.display = "none";
+    openModal(ssid, wrap, [
+      mkbtn(t("join"), "btn-primary", function () {
+        var pass = inPass.value;
+        if (inLock.checked && bssid) {
+          var url = "/api/nets/add?ssid=" + encodeURIComponent(ssid);
+          if (pass) url += "&pass=" + encodeURIComponent(pass);
+          url += "&bssid=" + bssid;
+          fetch(url, { method: "POST" })
+            .then(function (r) { return r.json(); }).then(function (jj) {
+              if (jj.ok) {
+                closeAllModals();
+                toast("toast_saved", true);
+                staConnect(ssid, pass || null);
+              } else {
+                toastErr(jj);
+              }
+            }).catch(function () {
+              toastErr();
+            });
+        } else {
+          closeAllModals();
+          staConnect(ssid, pass || null);
+        }
+      }),
+      mkbtn(t("dismiss"), "", closeModal)
+    ]);
   }
   function renderWlOverview(j) {
     var box = document.getElementById("wl-radio");
@@ -822,12 +947,13 @@
   }
   function forgetNet(ssid) {
     if (!ssid) return;
-    if (!confirm(ssid + "?")) return;
-    fetch("/api/nets/forget?ssid=" + encodeURIComponent(ssid), { method: "POST" })
-      .then(function () {
-        get("/api/nets", renderNets);
-        get("/api/net", renderNet);
-      });
+    confirmModal(t("del_net_confirm").replace("{s}", ssid), function () {
+      fetch("/api/nets/forget?ssid=" + encodeURIComponent(ssid), { method: "POST" })
+        .then(function () {
+          get("/api/nets", renderNets);
+          get("/api/net", renderNet);
+        });
+    }, "delete");
   }
   function openAddModal() {
     var wrap = document.createElement("div");
@@ -860,41 +986,40 @@
     inPass.type = "text"; inPass.size = 20; inPass.maxLength = 63;
     inPass.placeholder = t("net_keeppass_open");
     addRow(t("password"), inPass);
-    var msg = document.createElement("span");
     openModal(t("net_add_title"), wrap, [
       mkbtn(t("save"), "btn-primary", function () {
         var ss = inSsid.value;
         if (!ss) {
-          msg.textContent = "error";
+          toast("toast_error", false);
           return;
         }
         if (inAuth.value !== "open" && inAuth.value !== "auto" && !inPass.value) {
-          msg.textContent = "error";
+          toast("toast_error", false);
           return;
         }
         if (inBssid.value && !macOk(inBssid.value)) {
-          msg.textContent = "error";
+          toast("toast_error", false);
           return;
         }
         var url = "/api/nets/add?ssid=" + encodeURIComponent(ss);
         if (inPass.value) url += "&pass=" + encodeURIComponent(inPass.value);
         if (inBssid.value) url += "&bssid=" + inBssid.value;
         if (inAuth.value !== "auto") url += "&auth=" + encodeURIComponent(inAuth.value);
-        msg.textContent = "...";
         fetch(url, { method: "POST" })
           .then(function (r) { return r.json(); }).then(function (jj) {
-            msg.textContent = jj.ok ? "ok" : (jj.error || "error");
             if (jj.ok) {
               closeModal();
+              toast("toast_saved", true);
               get("/api/nets", renderNets);
+            } else {
+              toastErr(jj);
             }
           }).catch(function () {
-            msg.textContent = "error";
+            toastErr();
           });
       }),
       mkbtn(t("dismiss"), "", closeModal)
     ]);
-    document.getElementById("modal-foot").appendChild(msg);
   }
   function openNetModal(ssid) {
     var st = storedNet(ssid);
@@ -928,7 +1053,7 @@
     netRow("BSSID", inBssid);
     var inAuth = authSelect(st && st.auth ? st.auth :
       (si ? si.auth : "auto"));
-    /* скан отдает свои имена (wpa/wpa2...), в селекте только наши */
+    /* the scan reports its own names (wpa/wpa2...), the select has only ours */
     if (["auto", "open", "wpa", "wpa2", "wpa3"].indexOf(inAuth.value) < 0) {
       inAuth.value = "auto";
     }
@@ -937,39 +1062,38 @@
     inPass.type = "text"; inPass.size = 20; inPass.maxLength = 63;
     inPass.placeholder = t("net_keeppass");
     netRow(t("password"), inPass);
-    var msg = document.createElement("span");
     openModal(t("net_edit_title"), wrap, [
       mkbtn(t("save"), "btn-primary", function () {
         var ns = inSsid.value;
         var url = "/api/nets/update?ssid=" + encodeURIComponent(ssid);
         if (!ns) {
-          msg.textContent = "error";
+          toast("toast_error", false);
           return;
         }
         if (ns !== ssid) url += "&new_ssid=" + encodeURIComponent(ns);
         if (inPass.value) url += "&pass=" + encodeURIComponent(inPass.value);
         if (inBssid.value && !macOk(inBssid.value)) {
-          msg.textContent = "error";
+          toast("toast_error", false);
           return;
         }
         url += "&bssid=" + inBssid.value;
         url += "&auth=" + encodeURIComponent(inAuth.value);
-        msg.textContent = "...";
         fetch(url, { method: "POST" })
           .then(function (r) { return r.json(); }).then(function (jj) {
-            msg.textContent = jj.ok ? "ok" : (jj.error || "error");
             if (jj.ok) {
               closeModal();
+              toast("toast_saved", true);
               get("/api/nets", renderNets);
               get("/api/net", renderNet);
+            } else {
+              toastErr(jj);
             }
           }).catch(function () {
-            msg.textContent = "error";
+            toastErr();
           });
       }),
       mkbtn(t("dismiss"), "", closeModal)
     ]);
-    document.getElementById("modal-foot").appendChild(msg);
   }
   function renderWlNets(j) {
     var box = document.getElementById("wl-nets");
@@ -991,7 +1115,7 @@
       var info = document.createElement("div");
       info.className = "iface-info";
       var apSsid = lastAp ? lastAp.ssid : "?";
-      lnRow(info, "SSID", apSsid + " | Mode: " + t("mode_master"));
+      lnRow(info, "SSID", apSsid + " | " + t("mode") + ": " + t("mode_master"));
       lnRow(info, "BSSID", (apIf ? dispMac(apIf.mac) : "-") +
         " | " + t("encryption") + ": " + (lastAp ? apAuthName(lastAp.auth) : "?"));
       var act = document.createElement("div");
@@ -1008,7 +1132,7 @@
         row.appendChild(staUp ? sigBox(j.rssi) : offBox());
         var info = document.createElement("div");
         info.className = "iface-info";
-        lnRow(info, "SSID", cur + " | Mode: " + t("mode_client"));
+        lnRow(info, "SSID", cur + " | " + t("mode") + ": " + t("mode_client"));
         lnRow(info, "BSSID", dispMac(j.bssid) + " | " + t("encryption") +
           ": " + (j.encr || "-"));
         var act = document.createElement("div");
@@ -1043,7 +1167,7 @@
       row.appendChild(offBox());
       var info = document.createElement("div");
       info.className = "iface-info";
-      lnRow(info, "SSID", x.ssid + " | Mode: " + t("mode_client"));
+      lnRow(info, "SSID", x.ssid + " | " + t("mode") + ": " + t("mode_client"));
       lnRow(info, "BSSID", savedBssid(x.ssid) +
         " | " + t("encryption") + ": " + savedEncr(x.ssid));
       var act = document.createElement("div");
@@ -1063,6 +1187,20 @@
     });
   }
   var knownNets = [];
+  function renderFilesSys(j) {
+    var el = document.getElementById("files-space-text");
+    var fill = document.getElementById("files-space-fill");
+    if (!el || !fill || !j) return;
+    var total = j.fs_total || 0;
+    var used = j.fs_used || 0;
+    var free = total > used ? total - used : 0;
+    var pct = total > 0 ? (100 * used / total) : 0;
+    el.textContent = t("disk_space") + ": " + pct.toFixed(0) + "% " +
+      t("used_of") + " (" + fmtMiB(used) + " " + t("used_of") + " " +
+      t("of_word") + " " + fmtMiB(total) + ", " + fmtMiB(free) + " " +
+      t("free") + ")";
+    fill.style.width = pct.toFixed(1) + "%";
+  }
   function renderFiles(arr) {
     var tb = document.getElementById("files-body");
     tb.innerHTML = "";
@@ -1070,14 +1208,18 @@
       var tr = document.createElement("tr");
       tr.innerHTML = "<td></td><td></td><td></td>";
       tr.children[0].textContent = x.name;
-      tr.children[1].textContent = fmtKB(x.size);
+      tr.children[1].textContent = x.size + " B";
       var bd = mkbtn(t("download"), "", function () {
         window.location = "/api/files/download?name=" + encodeURIComponent(x.name);
       });
       var bx = mkbtn(t("delete"), "btn-danger", (function (s) { return function () {
-        if (!confirm(s + "?")) return;
-        fetch("/api/files/delete?name=" + encodeURIComponent(s), { method: "POST" })
-          .then(function () { get("/api/files", renderAll); });
+        confirmModal(t("del_file_confirm").replace("{s}", s), function () {
+          fetch("/api/files/delete?name=" + encodeURIComponent(s), { method: "POST" })
+            .then(function () {
+              get("/api/files", renderAll);
+              get("/api/sys", renderFilesSys);
+            });
+        }, "delete");
       }; })(x.name));
       tr.children[2].appendChild(bd);
       tr.children[2].appendChild(document.createTextNode(" "));
@@ -1096,11 +1238,13 @@
       tr.children[1].textContent = fmtKB(x.size);
       tr.children[2].textContent = x.loaded ? t("loaded") : "-";
       var br = mkbtn(t("run"), "btn-primary", (function (s) { return function () {
-        document.getElementById("modules-msg").textContent = "...";
         fetch("/api/elf/run?name=" + encodeURIComponent(s), { method: "POST" })
           .then(function (r) { return r.json(); }).then(function (j) {
-            document.getElementById("modules-msg").textContent = j.ok ? "ok" : j.error;
+            if (j.ok) toast("toast_started", true);
+            else toastErr(j);
             get("/api/files", renderAll);
+          }).catch(function () {
+            toastErr();
           });
       }; })(x.name), x.loaded);
       var bu = mkbtn(t("stop"), "btn-danger", (function (s) { return function () {
@@ -1123,13 +1267,16 @@
   document.getElementById("file-upload").onclick = function () {
     var f = document.getElementById("file-pick").files[0];
     if (!f) return;
-    document.getElementById("files-msg").textContent = "...";
     fetch("/api/files/upload?name=" + encodeURIComponent(f.name), {
       method: "POST",
       body: f
     }).then(function (r) { return r.json(); }).then(function (j) {
-      document.getElementById("files-msg").textContent = j.ok ? "ok" : j.error;
+      if (j.ok) toast("toast_uploaded", true);
+      else toastErr(j);
       get("/api/files", renderAll);
+      get("/api/sys", renderFilesSys);
+    }).catch(function () {
+      toastErr();
     });
   };
   function renderStations(arr) {
@@ -1145,7 +1292,7 @@
       tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
       var nb = document.createElement("span");
       nb.className = "netbox";
-      nb.textContent = "Access Point \"" + apSsid + "\" (ap)";
+      nb.textContent = t("ap_netbox").replace("{s}", apSsid);
       tr.children[0].appendChild(nb);
       tr.children[1].textContent = x.mac;
       tr.children[2].textContent = (x.ip && x.ip !== "-") ? x.ip : "-";
@@ -1154,14 +1301,13 @@
       tr.children[4].textContent = "-";
       tr.children[5].appendChild(mkbtn(t("wl_disconnect"), "btn-danger",
         (function (m) { return function () {
-          document.getElementById("stations-msg").textContent = "...";
           fetch("/api/ap/deauth?mac=" + m, { method: "POST" })
             .then(function (r) { return r.json(); }).then(function (jj) {
-              document.getElementById("stations-msg").textContent =
-                jj.ok ? "ok" : (jj.error || "error");
+              if (jj.ok) toast("toast_disconnected", true);
+              else toastErr(jj);
               get("/api/ap/stations", renderStations);
             }).catch(function () {
-              document.getElementById("stations-msg").textContent = "error";
+              toastErr();
             });
         }; })(x.mac)));
       tb.appendChild(tr);
@@ -1189,9 +1335,9 @@
       .then(function (txt) { out.textContent = txt; })
       .catch(function () { out.textContent = "error"; });
   };
-  /* Порт derive_color из OpenWrt LuCI: prng.js + sfh() из cbi.js.
-   * Дословный порт, семантика JS везде та же, цвета совпадают с LuCI
-   * для тех же BSSID один в один (включая краевые случаи). */
+  /* derive_color port from OpenWrt LuCI: prng.js + sfh() from cbi.js.
+   * A verbatim port, JS semantics are the same everywhere, colors match LuCI
+   * for the same BSSIDs one to one (including edge cases). */
   var prngS = [0, 0, 0, 0];
   function prngMul(a, b) {
     var r = [0, 0, 0, 0, 0, 0, 0, 0], i, j, k, t;
@@ -1328,7 +1474,7 @@
     return "#" + prngHex2(0xff - r) + prngHex2(0xff - g) + prngHex2(0xff - b);
   }
   function chanColor(x) {
-    /* iwinfo в OpenWrt отдает BSSID в верхнем регистре, хешируем так же */
+    /* iwinfo in OpenWrt reports BSSIDs in uppercase, hash the same way */
     return deriveColor((x.bssid || "").toUpperCase());
   }
   function sigBars(rssi) {
@@ -1348,7 +1494,7 @@
       (lastNet.ifaces || []).forEach(function (x) {
         if (x.name === "sta") mac = x.mac;
       });
-      /* как в OpenWrt: свой интерфейс рисуется отдельно с заглушкой -10 */
+      /* as in OpenWrt: own interface is drawn separately with a -10 stub */
       rows.push({ ssid: lastNet.ssid, bssid: mac,
         channel: lastNet.channel, rssi: -10, width: 20,
         local: true });
@@ -1356,10 +1502,10 @@
     return rows;
   }
   function drawSpec(arr) {
-    /* канвас 17x5: 2 пустые колонки + каналы 1-14 + 1 пустая;
-     * сетка через весь канвас, низ графика без пустой полосы */
+    /* 17x5 canvas: 2 empty columns + channels 1-14 + 1 empty;
+     * grid across the whole canvas, no empty strip at the graph bottom */
     var CW = 46, L = 2 * CW, T = 30, B = 300, c;
-    /* как в OpenWrt: каналы строго на вертикальных линиях сетки */
+    /* as in OpenWrt: channels strictly on the vertical grid lines */
     function X(ch) { return (ch + 1) * CW; }
     function Y(r) {
       var y = T + (B - T) * (0 - r) / 100;
@@ -1384,9 +1530,9 @@
     }
     arr.forEach(function (x) {
       var col = chanColor(x);
-      /* как в OpenWrt: cw = width/10 (2 для 20 МГц, 4 для 40 МГц),
-       * основание +-cw шагов, плато +-(cw-1) шагов.
-       * Центр 40 МГц съезжает на +-2 канала по second (above/below) */
+      /* as in OpenWrt: cw = width/10 (2 for 20 MHz, 4 for 40 MHz),
+       * base +-cw steps, plateau +-(cw-1) steps.
+       * The 40 MHz center shifts by +-2 channels per second (above/below) */
       var cw = x.width === 40 ? 4 : 2;
       var bw = cw * step;
       var pw = (cw - 1) * step;
@@ -1427,7 +1573,7 @@
         x.local ? t("ch_local") : (x.ssid || "?")));
       td[2].textContent = x.channel;
       td[3].textContent = (x.width || 20) + " MHz";
-      td[4].textContent = "Master";
+      td[4].textContent = t("mode_master");
       td[5].textContent = x.bssid;
       tb.appendChild(tr);
     });
@@ -1436,7 +1582,7 @@
     document.getElementById("chan-body").innerHTML = "";
     function go() {
       get("/api/scan", function (arr) {
-        /* скан как есть, локальный интерфейс отдельной строкой сверху */
+        /* scan as is, the local interface as a separate row on top */
         lastScan = Array.isArray(arr) ? arr : [];
         if (lastNet) renderWlNets(lastNet);
         var rows = chanRows().concat(arr);
@@ -1536,10 +1682,8 @@
     labNat.appendChild(inNat);
     labNat.appendChild(document.createTextNode(" " + t("ap_nat")));
     apRow("", labNat);
-    var msg = document.createElement("span");
     openModal(t("ap_title"), wrap, [
       mkbtn(t("save"), "btn-primary", function () {
-        msg.textContent = "...";
         fetch("/api/ap", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1551,22 +1695,26 @@
             nat: inNat.checked ? 1 : 0
           })
         }).then(function (r) {
-          msg.textContent = r.ok ? "ok" : "error";
-          if (r.ok) {
+          return r.json().then(function (jj) { return { http: r.ok, body: jj }; });
+        }).then(function (o) {
+          if (o.http && o.body.ok) {
+            closeModal();
+            toast("toast_saved", true);
             get("/api/ap", function (jj) {
               lastAp = jj;
               if (lastNet) renderWlNets(lastNet);
             });
+          } else {
+            toastErr(o.body);
           }
+        }).catch(function () {
+          toastErr();
         });
       }),
       mkbtn(t("dismiss"), "", closeModal)
     ]);
-    document.getElementById("modal-foot").appendChild(msg);
   }
   document.getElementById("bk-dl").onclick = function () {
-    var msg = document.getElementById("bk-msg");
-    msg.textContent = "...";
     fetch("/api/backup").then(function (r) {
       if (!r.ok) throw 0;
       return r.blob();
@@ -1579,38 +1727,42 @@
       a.click();
       a.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-      msg.textContent = "ok";
+      toast("toast_downloaded", true);
     }).catch(function () {
-      msg.textContent = "error";
+      toastErr();
     });
   };
   document.getElementById("bk-up2").onclick = function () {
     document.getElementById("bk-pick").click();
   };
   document.getElementById("bk-pick").onchange = function () {
-    var f = document.getElementById("bk-pick").files[0];
-    var msg = document.getElementById("bk-up-msg");
+    var pick = document.getElementById("bk-pick");
+    var f = pick.files[0];
     if (!f) return;
-    if (!confirm(t("bk_confirm"))) return;
-    msg.textContent = "...";
-    fetch("/api/backup/restore", { method: "POST", body: f })
-      .then(function (r) { return r.json(); }).then(function (j) {
-        msg.textContent = j.ok ? "rebooting..." : j.error;
-      }).catch(function () {
-        msg.textContent = "error";
-      });
+    pick.value = "";
+    confirmModal(t("bk_confirm"), function () {
+      fetch("/api/backup/restore", { method: "POST", body: f })
+        .then(function (r) { return r.json(); }).then(function (j) {
+          if (j.ok) toast("toast_rebooting", true);
+          else toastErr(j);
+        }).catch(function () {
+          toastErr();
+        });
+    });
   };
   document.getElementById("fr-go").onclick = function () {
-    var msg = document.getElementById("fr-msg");
-    if (!confirm(t("fr_confirm"))) return;
-    msg.textContent = "...";
-    fetch("/api/factory-reset", { method: "POST" })
-      .then(function (r) { return r.json(); }).then(function (j) {
-        msg.textContent = j.ok ? "rebooting..." :
-          (j.error === "tasks_running" ? t("fr_loaded") : j.error);
-      }).catch(function () {
-        msg.textContent = "error";
-      });
+    confirmModal(t("fr_confirm"), function () {
+      fetch("/api/factory-reset", { method: "POST" })
+        .then(function (r) { return r.json(); }).then(function (j) {
+          if (j.ok) {
+            toast("toast_rebooting", true);
+          } else {
+            toastErr(j);
+          }
+        }).catch(function () {
+          toastErr();
+        });
+    });
   };
   var TZS = [
     ["UTC","UTC0"],
@@ -2116,50 +2268,49 @@
   }
   document.getElementById("ntp-sync").onclick = ntpSyncNow;
   document.getElementById("sys-save").onclick = function () {
-    var msg = document.getElementById("save-msg");
     var srvs = [];
     var tzSel = document.getElementById("tz-select");
     var zone = tzSel.options[tzSel.selectedIndex].text;
-    msg.textContent = "...";
     document.querySelectorAll("#ntp-list input").forEach(function (inp) {
       if (inp.value) srvs.push(inp.value);
     });
-    fetch("/api/hostname", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hostname: document.getElementById("host-input").value })
-    }).then(function (r) {
-      if (!r.ok) throw "hostname";
-      return fetch("/api/tz", {
+    /* POST JSON reading the error code from the body even on HTTP failure */
+    function postJSON(url, obj, stage) {
+      return fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tz: tzSel.value, zonename: zone })
+        body: JSON.stringify(obj)
+      }).then(function (r) {
+        return r.json().then(function (j) {
+          if (!r.ok || !j.ok) throw (j.error || stage);
+        });
       });
-    }).then(function (r) { return r.json(); }).then(function (j) {
-      if (!j.ok) throw "tz";
-      return fetch("/api/ntp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          enabled: document.getElementById("ntp-en").checked ? 1 : 0,
-          servers: srvs.join(" ")
-        })
-      });
-    }).then(function (r) { return r.json(); }).then(function (j) {
-      msg.textContent = j.ok ? "ok" : j.error;
+    }
+    postJSON("/api/hostname",
+      { hostname: document.getElementById("host-input").value }, "hostname")
+    .then(function () {
+      return postJSON("/api/tz", { tz: tzSel.value, zonename: zone }, "tz");
+    }).then(function () {
+      return postJSON("/api/ntp", {
+        enabled: document.getElementById("ntp-en").checked ? 1 : 0,
+        servers: srvs.join(" ")
+      }, "ntp");
+    }).then(function () {
+      toast("toast_saved", true);
       get("/api/hostname", function (h) {
         document.getElementById("host-input").value = h.hostname;
       });
       get("/api/ntp", renderNtp);
       get("/api/sys", renderSys);
-    }).catch(function (e) {
-      msg.textContent = "error: " + e;
+    }).catch(function (code) {
+      toastErr(typeof code === "string" ? { error: code } : null);
     });
   };
   document.getElementById("do-reboot").onclick = function () {
-    if (!confirm(t("rb_confirm"))) return;
-    fetch("/api/reboot", { method: "POST" });
-    document.getElementById("reboot-msg").textContent = "rebooting...";
+    confirmModal(t("rb_confirm"), function () {
+      fetch("/api/reboot", { method: "POST" });
+      toast("toast_rebooting", true);
+    });
   };
   document.getElementById("timefmt-select").value = timeFmt();
   document.getElementById("timefmt-select").onchange = function () {

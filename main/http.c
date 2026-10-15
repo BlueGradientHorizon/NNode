@@ -24,6 +24,39 @@ extern const uint8_t _binary_index_html_gz_end[] asm("_binary_index_html_gz_end"
 
 static const char *TAG = "nnode_http";
 
+/* Error code dictionary for {"error":"CODE"} responses.
+ * Success stays {"ok":true}. CODE is a stable lowercase snake_case id,
+ * never human text and never a printf format: the frontend maps it to
+ * i18n key err_<CODE> and falls back to a generic error for unknown codes.
+ * Rule: a new code must be listed here and translated in src_web/i18n.js
+ * (ru and en) in the same change.
+ * Generic: method (405 wrong method), body (400 empty body),
+ * ts (400 bad timestamp), name (400 bad name param),
+ * not_found (404 no such item), not_loaded (404 module not loaded),
+ * forbidden (403 not allowed), host (400 missing host),
+ * ssid (400 missing SSID), mac (400 missing MAC),
+ * size (411 no Content-Length), busy (409 restore already running),
+ * error (fallback, unspecified failure).
+ * Settings (400 bad value): ap, hostname, ntp, servers, tz, nets.
+ * WiFi: need_pass (400 password required), connect (400 connect failed),
+ * exists (409 SSID already saved).
+ * Backup restore (400): parse, version, hostname, ntp, nets, ap,
+ * wipe, files, space, last, tz.
+ * Modules: bad_name, not_elf, already_loaded, no_slots, no_mem,
+ * elf_open, elf_init, elf_relocate, tasks_running (409 live tasks).
+ * Files: open (500 cannot create), write (500 write failed).
+ * Reset: tasks_running (409 unload modules first), reset (500 failed). */
+static esp_err_t send_err(httpd_req_t *r, const char *code)
+{
+    char eb[128];
+    int n;
+    if (!code || !code[0]) {
+        code = "error";
+    }
+    n = snprintf(eb, sizeof(eb), "{\"error\":\"%s\"}", code);
+    return httpd_resp_send(r, eb, n < 0 ? 0 : n);
+}
+
 static esp_err_t h_tasks(httpd_req_t *r);
 static esp_err_t h_net(httpd_req_t *r);
 static esp_err_t h_scan(httpd_req_t *r);
@@ -232,19 +265,19 @@ static esp_err_t h_time(httpd_req_t *r)
     long long ts;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     n = httpd_req_recv(r, b, sizeof(b) - 1);
     if (n <= 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"body\"}", 16);
+        return send_err(r, "body");
     }
     b[n] = 0;
     p = strstr(b, "ts");
     ts = (p && strchr(p, ':')) ? atoll(strchr(p, ':') + 1) : 0;
     if (ts <= 0 || nnode_api_time_set(ts) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"ts\"}", 14);
+        return send_err(r, "ts");
     }
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
@@ -258,13 +291,14 @@ static esp_err_t h_kill(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "name", name, sizeof(name)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
+    qry_decode(name);
     rc = nnode_task_kill(name);
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
@@ -273,10 +307,10 @@ static esp_err_t h_kill(httpd_req_t *r)
     }
     if (rc == -1) {
         httpd_resp_set_status(r, "404 Not Found");
-        return httpd_resp_send(r, "{\"error\":\"not_found\"}", 21);
+        return send_err(r, "not_found");
     }
     httpd_resp_set_status(r, "403 Forbidden");
-    return httpd_resp_send(r, "{\"error\":\"forbidden\"}", 21);
+    return send_err(r, "forbidden");
 }
 
 static esp_err_t h_net(httpd_req_t *r)
@@ -339,13 +373,14 @@ static esp_err_t h_ping(httpd_req_t *r)
     chunk_ctx_t cx;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "host", host, sizeof(host)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"host\"}", 16);
+        return send_err(r, "host");
     }
+    qry_decode(host);
     n = 4;
     if (httpd_query_key_value(q, "count", cnt, sizeof(cnt)) == ESP_OK) {
         n = atoi(cnt);
@@ -370,13 +405,14 @@ static esp_err_t h_trace(httpd_req_t *r)
     chunk_ctx_t cx;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "host", host, sizeof(host)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"host\"}", 16);
+        return send_err(r, "host");
     }
+    qry_decode(host);
     httpd_resp_set_type(r, "text/plain");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     cx.req = r;
@@ -394,13 +430,14 @@ static esp_err_t h_nslookup(httpd_req_t *r)
     int n;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "host", host, sizeof(host)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"host\"}", 16);
+        return send_err(r, "host");
     }
+    qry_decode(host);
     b = malloc(512);
     if (!b) {
         return ESP_ERR_NO_MEM;
@@ -422,7 +459,7 @@ static esp_err_t h_renew(httpd_req_t *r)
 {
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
@@ -435,7 +472,7 @@ static esp_err_t h_reboot(httpd_req_t *r)
 {
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
@@ -475,19 +512,19 @@ static esp_err_t h_ap(httpd_req_t *r)
         httpd_resp_set_type(r, "application/json");
         if (n <= 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"body\"}", 16);
+            return send_err(r, "body");
         }
         b[n] = 0;
         if (nnode_ap_parse_json(b, &apc) != 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"ap\"}", 14);
+            return send_err(r, "ap");
         }
         httpd_resp_sendstr(r, "{\"ok\":true}");
         nnode_ap_set(&apc);
         return ESP_OK;
     }
     httpd_resp_set_status(r, "405 Method Not Allowed");
-    return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+    return send_err(r, "method");
 }
 
 static esp_err_t h_stacon(httpd_req_t *r)
@@ -498,15 +535,18 @@ static esp_err_t h_stacon(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "ssid", ssid, sizeof(ssid)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"ssid\"}", 16);
+        return send_err(r, "ssid");
     }
+    qry_decode(ssid);
     pass[0] = 0;
-    httpd_query_key_value(q, "pass", pass, sizeof(pass));
+    if (httpd_query_key_value(q, "pass", pass, sizeof(pass)) == ESP_OK) {
+        qry_decode(pass);
+    }
     rc = nnode_sta_connect(ssid, pass[0] ? pass : NULL);
     httpd_resp_set_type(r, "application/json");
     if (rc == 0) {
@@ -514,17 +554,17 @@ static esp_err_t h_stacon(httpd_req_t *r)
     }
     if (rc == -2) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"need_pass\"}", 20);
+        return send_err(r, "need_pass");
     }
     httpd_resp_set_status(r, "400 Bad Request");
-    return httpd_resp_send(r, "{\"error\":\"connect\"}", 19);
+    return send_err(r, "connect");
 }
 
 static esp_err_t h_stadisc(httpd_req_t *r)
 {
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     nnode_sta_disconnect();
     httpd_resp_set_type(r, "application/json");
@@ -537,13 +577,14 @@ static esp_err_t h_forget(httpd_req_t *r)
     char ssid[40];
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "ssid", ssid, sizeof(ssid)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"ssid\"}", 16);
+        return send_err(r, "ssid");
     }
+    qry_decode(ssid);
     httpd_resp_set_type(r, "application/json");
     if (nnode_nets_forget(ssid) == 0) {
         /* Task: deleting the live network must also drop the link,
@@ -557,7 +598,7 @@ static esp_err_t h_forget(httpd_req_t *r)
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "404 Not Found");
-    return httpd_resp_send(r, "{\"error\":\"not_found\"}", 21);
+    return send_err(r, "not_found");
 }
 
 static esp_err_t h_netsupdate(httpd_req_t *r)
@@ -570,23 +611,26 @@ static esp_err_t h_netsupdate(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "ssid", ssid, sizeof(ssid)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"ssid\"}", 16);
+        return send_err(r, "ssid");
     }
+    qry_decode(ssid);
     if (nnode_nets_get(ssid, &dummy) != 0) {
         httpd_resp_set_type(r, "application/json");
         httpd_resp_set_status(r, "404 Not Found");
-        return httpd_resp_send(r, "{\"error\":\"not_found\"}", 21);
+        return send_err(r, "not_found");
     }
     if (httpd_query_key_value(q, "new_ssid", newb, sizeof(newb)) == ESP_OK) {
+        qry_decode(newb);
         new_ssid = newb;
     }
     /* pass/bssid/auth present (even empty) mean set; absent mean keep */
     if (httpd_query_key_value(q, "pass", passb, sizeof(passb)) == ESP_OK) {
+        qry_decode(passb);
         pass = passb;
     }
     if (httpd_query_key_value(q, "bssid", bssidb, sizeof(bssidb)) == ESP_OK) {
@@ -594,6 +638,7 @@ static esp_err_t h_netsupdate(httpd_req_t *r)
         bssid = bssidb;
     }
     if (httpd_query_key_value(q, "auth", authb, sizeof(authb)) == ESP_OK) {
+        qry_decode(authb);
         auth = authb;
     }
     rc = nnode_nets_update(ssid, new_ssid, pass, pass != NULL,
@@ -604,10 +649,10 @@ static esp_err_t h_netsupdate(httpd_req_t *r)
     }
     if (rc == -2) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_send(r, "{\"error\":\"exists\"}", 18);
+        return send_err(r, "exists");
     }
     httpd_resp_set_status(r, "400 Bad Request");
-    return httpd_resp_send(r, "{\"error\":\"nets\"}", 16);
+    return send_err(r, "nets");
 }
 
 static esp_err_t h_netsadd(httpd_req_t *r)
@@ -619,29 +664,33 @@ static esp_err_t h_netsadd(httpd_req_t *r)
     const char *bp = NULL, *ap = NULL;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "ssid", ssid, sizeof(ssid)) != ESP_OK ||
         !ssid[0]) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"ssid\"}", 16);
+        return send_err(r, "ssid");
     }
+    qry_decode(ssid);
     /* pass absent means open network; present (even empty) sets it */
     pass[0] = 0;
-    httpd_query_key_value(q, "pass", pass, sizeof(pass));
+    if (httpd_query_key_value(q, "pass", pass, sizeof(pass)) == ESP_OK) {
+        qry_decode(pass);
+    }
     if (httpd_query_key_value(q, "bssid", bssid, sizeof(bssid)) == ESP_OK) {
         qry_decode(bssid);
         bp = bssid;
     }
     if (httpd_query_key_value(q, "auth", auth, sizeof(auth)) == ESP_OK) {
+        qry_decode(auth);
         ap = auth;
     }
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     if (nnode_nets_add(ssid, pass, bp, ap) < 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"nets\"}", 16);
+        return send_err(r, "nets");
     }
     return httpd_resp_sendstr(r, "{\"ok\":true}");
 }
@@ -655,8 +704,11 @@ static esp_err_t h_stations(httpd_req_t *r)
     return httpd_resp_send(r, b, n < 0 ? 0 : n);
 }
 
-/* httpd_query_key_value does not percent-decode: a client sending
- * %3A for colons would fail strict parsers below, so decode in place. */
+/* httpd_query_key_value does not percent-decode, while the UI always sends
+ * encodeURIComponent values (needed for &/=/spaces and non-ASCII, e.g. a
+ * colon sent as %3A would fail strict parsers below). So every string value
+ * taken from the query is decoded in place right after parsing; without this
+ * a Cyrillic SSID is stored still encoded and later stops matching. */
 static void qry_decode(char *s)
 {
     char *wr = s;
@@ -678,12 +730,12 @@ static esp_err_t h_deauth(httpd_req_t *r)
     char mac[64];
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
         httpd_query_key_value(q, "mac", mac, sizeof(mac)) != ESP_OK) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"mac\"}", 15);
+        return send_err(r, "mac");
     }
     qry_decode(mac);
     httpd_resp_set_type(r, "application/json");
@@ -692,7 +744,7 @@ static esp_err_t h_deauth(httpd_req_t *r)
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "404 Not Found");
-    return httpd_resp_send(r, "{\"error\":\"not_found\"}", 21);
+    return send_err(r, "not_found");
 }
 
 static esp_err_t h_graphs(httpd_req_t *r)
@@ -751,7 +803,7 @@ static esp_err_t h_logclear(httpd_req_t *r)
 {
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     nnode_log_clear();
     httpd_resp_set_type(r, "application/json");
@@ -788,7 +840,7 @@ static esp_err_t h_ntp(httpd_req_t *r)
         size_t k = 0;
         if (n <= 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"body\"}", 16);
+            return send_err(r, "body");
         }
         b[n] = 0;
         en = strstr(b, "\"enabled\":1") != NULL;
@@ -802,25 +854,25 @@ static esp_err_t h_ntp(httpd_req_t *r)
             srvs[k] = 0;
             if (*p != '"') {
                 httpd_resp_set_status(r, "400 Bad Request");
-                return httpd_resp_send(r, "{\"error\":\"servers\"}", 19);
+                return send_err(r, "servers");
             }
         }
         httpd_resp_set_type(r, "application/json");
         if (nnode_ntp_save(en, srvs) != 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"ntp\"}", 15);
+            return send_err(r, "ntp");
         }
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "405 Method Not Allowed");
-    return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+    return send_err(r, "method");
 }
 
 static esp_err_t h_ntpsync(httpd_req_t *r)
 {
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     nnode_ntp_sync_now();
     httpd_resp_set_type(r, "application/json");
@@ -847,13 +899,13 @@ static esp_err_t h_hostname(httpd_req_t *r)
         int n = httpd_req_recv(r, b, sizeof(b) - 1);
         if (n <= 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"body\"}", 16);
+            return send_err(r, "body");
         }
         b[n] = 0;
         p = strstr(b, "\"hostname\":\"");
         if (!p) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"hostname\"}", 20);
+            return send_err(r, "hostname");
         }
         p += 12;
         while (*p && *p != '"' && k + 1 < sizeof(host)) {
@@ -862,12 +914,12 @@ static esp_err_t h_hostname(httpd_req_t *r)
         host[k] = 0;
         if (*p != '"') {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"hostname\"}", 20);
+            return send_err(r, "hostname");
         }
         httpd_resp_set_type(r, "application/json");
         if (nnode_hostname_save(host) != 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_sendstr(r, "{\"error\":\"hostname\"}");
+            return send_err(r, "hostname");
         }
         httpd_resp_sendstr(r, "{\"ok\":true}");
         /* Renew drops the station IP for a moment; defer past the
@@ -887,7 +939,7 @@ static esp_err_t h_hostname(httpd_req_t *r)
         return ESP_OK;
     }
     httpd_resp_set_status(r, "405 Method Not Allowed");
-    return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+    return send_err(r, "method");
 }
 
 static esp_err_t h_tz(httpd_req_t *r)
@@ -911,13 +963,13 @@ static esp_err_t h_tz(httpd_req_t *r)
         int n = httpd_req_recv(r, b, sizeof(b) - 1);
         if (n <= 0) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"body\"}", 16);
+            return send_err(r, "body");
         }
         b[n] = 0;
         p = strstr(b, "\"tz\":\"");
         if (!p) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"tz\"}", 14);
+            return send_err(r, "tz");
         }
         p += 6;
         while (*p && *p != '"' && k + 1 < sizeof(tz)) {
@@ -926,7 +978,7 @@ static esp_err_t h_tz(httpd_req_t *r)
         tz[k] = 0;
         if (*p != '"') {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_send(r, "{\"error\":\"tz\"}", 14);
+            return send_err(r, "tz");
         }
         zn[0] = 0;
         p = strstr(b, "\"zonename\":\"");
@@ -939,20 +991,20 @@ static esp_err_t h_tz(httpd_req_t *r)
             zn[k] = 0;
             if (*p != '"') {
                 httpd_resp_set_status(r, "400 Bad Request");
-                return httpd_resp_send(r, "{\"error\":\"tz\"}", 14);
+                return send_err(r, "tz");
             }
         }
         httpd_resp_set_type(r, "application/json");
         if (nnode_tz_save(tz) != 0 ||
             (zn[0] && nnode_zonename_save(zn) != 0)) {
             httpd_resp_set_status(r, "400 Bad Request");
-            return httpd_resp_sendstr(r, "{\"error\":\"tz\"}");
+            return send_err(r, "tz");
         }
         nnode_tz_apply();
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "405 Method Not Allowed");
-    return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+    return send_err(r, "method");
 }
 
 typedef struct {
@@ -1046,14 +1098,14 @@ static esp_err_t h_restore(httpd_req_t *r)
     char q[64], v[8];
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     /* Chunked uploads carry no Content-Length; browsers send it for
      * Blob POST, which is all the UI uses. No RAM-size cap: the parser
      * streams, the limit is free space in /data. */
     if (r->content_len <= 0) {
         httpd_resp_set_status(r, "411 Length Required");
-        return httpd_resp_send(r, "{\"error\":\"size\"}", 16);
+        return send_err(r, "size");
     }
     /* Debug aid: skip the reboot to inspect the restored state first. */
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK &&
@@ -1069,7 +1121,7 @@ static esp_err_t h_restore(httpd_req_t *r)
     taskEXIT_CRITICAL(&s_restore_mu);
     if (busy) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_send(r, "{\"error\":\"busy\"}", 16);
+        return send_err(r, "busy");
     }
     j.req = r;
     j.content_len = r->content_len;
@@ -1088,10 +1140,8 @@ static esp_err_t h_restore(httpd_req_t *r)
     taskEXIT_CRITICAL(&s_restore_mu);
     httpd_resp_set_type(r, "application/json");
     if (j.rc != 0) {
-        char eb[80];
         httpd_resp_set_status(r, "400 Bad Request");
-        snprintf(eb, sizeof(eb), "{\"error\":\"%s\"}", j.err[0] ? j.err : "parse");
-        return httpd_resp_sendstr(r, eb);
+        return send_err(r, j.err[0] ? j.err : "parse");
     }
     httpd_resp_sendstr(r, "{\"ok\":true}");
     if (noreboot) {
@@ -1107,18 +1157,18 @@ static esp_err_t h_reset(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     rc = nnode_factory_reset();
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     if (rc == -2) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_send(r, "{\"error\":\"tasks_running\"}", 25);
+        return send_err(r, "tasks_running");
     }
     if (rc != 0) {
         httpd_resp_set_status(r, "500 Internal Error");
-        return httpd_resp_send(r, "{\"error\":\"reset\"}", 17);
+        return send_err(r, "reset");
     }
     httpd_resp_sendstr(r, "{\"ok\":true}");
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -1133,6 +1183,7 @@ static int query_name(httpd_req_t *r, char *name, size_t cap)
         httpd_query_key_value(q, "name", name, cap) != ESP_OK) {
         return -1;
     }
+    qry_decode(name);
     return nnode_file_valid(name) ? 0 : -1;
 }
 
@@ -1161,13 +1212,13 @@ static esp_err_t h_download(httpd_req_t *r)
     char *chunk;
     if (query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
     snprintf(path, sizeof(path), "/data/%s", name);
     f = fopen(path, "rb");
     if (!f) {
         httpd_resp_set_status(r, "404 Not Found");
-        return httpd_resp_send(r, "{\"error\":\"not_found\"}", 21);
+        return send_err(r, "not_found");
     }
     fseek(f, 0, SEEK_END);
     size = ftell(f);
@@ -1206,17 +1257,17 @@ static esp_err_t h_upload(httpd_req_t *r)
     int left = r->content_len;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
     snprintf(path, sizeof(path), "/data/%s", name);
     f = fopen(path, "wb");
     if (!f) {
         httpd_resp_set_status(r, "500 Internal Error");
-        return httpd_resp_send(r, "{\"error\":\"open\"}", 16);
+        return send_err(r, "open");
     }
     chunk = malloc(4096);
     if (!chunk) {
@@ -1242,7 +1293,7 @@ static esp_err_t h_upload(httpd_req_t *r)
     if (total < 0 || left != 0) {
         unlink(path);
         httpd_resp_set_status(r, "500 Internal Error");
-        return httpd_resp_send(r, "{\"error\":\"write\"}", 17);
+        return send_err(r, "write");
     }
     {
         char ok[64];
@@ -1257,11 +1308,11 @@ static esp_err_t h_fdelete(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
     rc = nnode_file_delete(name);
     httpd_resp_set_type(r, "application/json");
@@ -1269,7 +1320,7 @@ static esp_err_t h_fdelete(httpd_req_t *r)
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "404 Not Found");
-    return httpd_resp_send(r, "{\"error\":\"not_found\"}", 21);
+    return send_err(r, "not_found");
 }
 
 static esp_err_t h_elfrun(httpd_req_t *r)
@@ -1278,22 +1329,18 @@ static esp_err_t h_elfrun(httpd_req_t *r)
     char err[96];
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
     httpd_resp_set_type(r, "application/json");
     if (nnode_elf_run(name, err, sizeof(err)) == 0) {
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
-    {
-        char eb[160];
-        httpd_resp_set_status(r, "500 Internal Error");
-        snprintf(eb, sizeof(eb), "{\"error\":\"%s\"}", err);
-        return httpd_resp_sendstr(r, eb);
-    }
+    httpd_resp_set_status(r, "500 Internal Error");
+    return send_err(r, err);
 }
 
 static esp_err_t h_elfunload(httpd_req_t *r)
@@ -1302,11 +1349,11 @@ static esp_err_t h_elfunload(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
     rc = nnode_elf_unload(name);
     httpd_resp_set_type(r, "application/json");
@@ -1315,10 +1362,10 @@ static esp_err_t h_elfunload(httpd_req_t *r)
     }
     if (rc == -3) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_send(r, "{\"error\":\"tasks_running\"}", 25);
+        return send_err(r, "tasks_running");
     }
     httpd_resp_set_status(r, "404 Not Found");
-    return httpd_resp_send(r, "{\"error\":\"not_loaded\"}", 21);
+    return send_err(r, "not_loaded");
 }
 
 static esp_err_t h_elfstop(httpd_req_t *r)
@@ -1327,11 +1374,11 @@ static esp_err_t h_elfstop(httpd_req_t *r)
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
-        return httpd_resp_send(r, "{\"error\":\"method\"}", 18);
+        return send_err(r, "method");
     }
     if (query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
-        return httpd_resp_send(r, "{\"error\":\"name\"}", 16);
+        return send_err(r, "name");
     }
     rc = nnode_elf_stop(name);
     httpd_resp_set_type(r, "application/json");
@@ -1339,5 +1386,5 @@ static esp_err_t h_elfstop(httpd_req_t *r)
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "404 Not Found");
-    return httpd_resp_send(r, "{\"error\":\"not_loaded\"}", 21);
+    return send_err(r, "not_loaded");
 }
