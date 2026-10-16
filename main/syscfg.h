@@ -25,5 +25,12 @@ void nnode_devid(char out[5]);
 /* Defaults sharing the same suffix: "nnode-XXXX" and "NNode-XXXX". */
 void nnode_hostname_default(char *out, size_t len);
 void nnode_ap_default(char *out, size_t len);
-/* Wipe /data and all nnode NVS. 0 ok, -1 error, -2 modules loaded. */
+/* Validate a device/time package text before committing it. */
+int nnode_device_validate(const char *text);
+int nnode_time_validate(const char *text);
+/* Write default files for every missing package. Existing files are
+ * never touched. Call once at boot after the config dir exists. */
+void nnode_cfg_seed_defaults(void);
+/* Wipe /data (settings, uploads, modules). 0 ok, -1 error,
+ * -2 modules loaded. */
 int nnode_factory_reset(void);

@@ -10,12 +10,13 @@ dependencies.lock (same policy as the root one).
 Usage: build.py <target> <action> <app> [ip]
 
   target  board in ../boards/<target>/ (e.g. esp32c3)
-  action  build|upload|clean
+  action  build|upload|upload-run|clean
   app     module in examples/<app>/ (e.g. blink)
-  ip      board address, required for upload (e.g. 192.168.1.241)
+  ip      board address, required for upload and upload-run (e.g. 192.168.1.241)
 
 Modules are never flashed over serial: "upload" sends the .app.elf to the
-board over HTTP and runs it via /api/elf/run.
+board over HTTP without starting it, "upload-run" additionally starts it
+via /api/elf/run.
 """
 import argparse
 import json
@@ -83,15 +84,17 @@ def main():
         description="Build/upload a loadable NNode ELF module.")
     ap.add_argument("target", help="board in boards/<target>/ (e.g. esp32c3)")
     ap.add_argument(
-        "action", choices=["build", "upload", "clean"], help="what to do")
+        "action",
+        choices=["build", "upload", "upload-run", "clean"],
+        help="what to do")
     ap.add_argument("app", help="module in examples/<app>/ (e.g. blink)")
     ap.add_argument("ip", nargs="?", default=None,
-                    help="board address, required for upload")
+                    help="board address, required for upload and upload-run")
     args = ap.parse_args()
 
-    if args.action == "upload" and not args.ip:
+    if args.action in ("upload", "upload-run") and not args.ip:
         ap.error("upload needs <ip> (e.g. 192.168.1.241)")
-    if args.action != "upload" and args.ip:
+    if args.action not in ("upload", "upload-run") and args.ip:
         ap.error("<ip> only makes sense for upload")
 
     os.chdir(ROOT)
@@ -158,20 +161,21 @@ def main():
     elf = os.path.join(out, f"{app}.app.elf")
     print(f"{os.path.getsize(elf)} bytes: {elf}")
 
-    if action == "upload":
+    if action in ("upload", "upload-run"):
         with open(elf, "rb") as f:
             body = api(args.ip, "POST",
-                       f"/api/files/upload?name={app}.elf", f.read())
+                       f"/api/files/upload?name=programs/{app}.elf", f.read())
         print("upload:", body)
         require_ok(body, "upload")
-        # Replace a running copy: stop/unload errors are fine when idle.
-        body = api(args.ip, "POST", f"/api/elf/stop?name={app}.elf")
-        print("stop:", body)
-        body = api(args.ip, "POST", f"/api/elf/unload?name={app}.elf")
-        print("unload:", body)
-        body = api(args.ip, "POST", f"/api/elf/run?name={app}.elf")
-        print("run:", body)
-        require_ok(body, "run")
+        if action == "upload-run":
+            # Replace a running copy: stop/unload errors are fine when idle.
+            body = api(args.ip, "POST", f"/api/elf/stop?name={app}.elf")
+            print("stop:", body)
+            body = api(args.ip, "POST", f"/api/elf/unload?name={app}.elf")
+            print("unload:", body)
+            body = api(args.ip, "POST", f"/api/elf/run?name={app}.elf")
+            print("run:", body)
+            require_ok(body, "run")
 
 
 if __name__ == "__main__":

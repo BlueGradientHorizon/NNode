@@ -2,90 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+#include "cfg.h"
 #include "nets.h"
 
-#define NS "nnode"
-
-/* JSON string escaping for " and \ (ssid/pass range) */
-static size_t esc(const char *in, char *out, size_t cap)
-{
-    size_t o = 0;
-    for (; *in && o + 2 < cap; in++) {
-        if (*in == '"' || *in == '\\') {
-            out[o++] = '\\';
-        }
-        out[o++] = *in;
-    }
-    out[o] = 0;
-    return o;
-}
-
-/* Parse "key":"value" with unescape, value into out. Returns 0 on success. */
-static int unesc_val(const char *s, const char *key, char *out, size_t cap)
-{
-    char pat[40];
-    const char *p;
-    size_t o = 0;
-    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-    p = strstr(s, pat);
-    if (!p) {
-        return -1;
-    }
-    p += strlen(pat);
-    while (*p && o + 1 < cap) {
-        if (*p == '\\' && p[1]) {
-            p++;
-            out[o++] = *p++;
-        } else if (*p == '"') {
-            out[o] = 0;
-            return 0;
-        } else {
-            out[o++] = *p++;
-        }
-    }
-    out[o] = 0;
-    return *p == '"' ? 0 : -1;
-}
-
-static int blob_get(const char *key, char *out, size_t cap)
-{
-    nvs_handle_t h;
-    size_t len = cap;
-    esp_err_t r;
-    r = nvs_open(NS, NVS_READONLY, &h);
-    if (r != ESP_OK) {
-        ESP_LOGE("nnode_nvs", "open(%s)=%d", NS, (int)r);
-        return -1;
-    }
-    r = nvs_get_blob(h, key, out, &len);
-    nvs_close(h);
-    if (r != ESP_OK) {
-        ESP_LOGE("nnode_nvs", "get(%s)=%d", key, (int)r);
-        return -1;
-    }
-    if (len >= cap) {
-        len = cap - 1;
-    }
-    out[len] = 0;
-    return 0;
-}
-
-static int blob_set(const char *key, const char *val)
-{
-    nvs_handle_t h;
-    esp_err_t r;
-    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) {
-        return -1;
-    }
-    r = nvs_set_blob(h, key, val, strlen(val) + 1);
-    if (r == ESP_OK) {
-        r = nvs_commit(h);
-    }
-    nvs_close(h);
-    return r == ESP_OK ? 0 : -1;
-}
+static const char *TAG = "nnode_cfg_sta";
 
 int nnode_bssid_parse(const char *s, uint8_t *m)
 {
@@ -111,62 +31,233 @@ int nnode_auth_valid(const char *auth)
         strcmp(auth, "wpa3") == 0);
 }
 
+/* Parse state. net entries go straight into the caller's array, so no
+ * big struct ever sits on the stack (main task stack is ~3.5 KB). */
+typedef struct {
+    nnode_net_cred_t *nets;
+    int cap;
+    int nnets;
+    char *last;
+    int *has_last;
+    int in_net;
+    int in_last;
+    int cur;
+    int strict;
+    int total;
+} sta_ctx_t;
+
+static int sta_section(void *ctx, const char *type, const char *name, int has_name)
+{
+    sta_ctx_t *c = ctx;
+    (void)name;
+    (void)has_name;
+    c->in_net = 0;
+    c->in_last = 0;
+    if (strcmp(type, "net") == 0) {
+        c->total++;
+        if (c->nnets >= c->cap) {
+            /* More sections than slots: extra ones are ignored. */
+            c->cur = -1;
+            c->in_net = 1;
+            return 0;
+        }
+        c->cur = c->nnets++;
+        if (c->nets) {
+            memset(&c->nets[c->cur], 0, sizeof(c->nets[c->cur]));
+            strncpy(c->nets[c->cur].auth, "auto", sizeof(c->nets[c->cur].auth) - 1);
+        }
+        c->in_net = 1;
+    } else if (strcmp(type, "last") == 0) {
+        c->in_last = 1;
+    } else if (c->strict) {
+        return -1;
+    }
+    return 0;
+}
+
+static int sta_option(void *ctx, const char *key, const char *value)
+{
+    sta_ctx_t *c = ctx;
+    nnode_net_cred_t tmp_entry;
+    nnode_net_cred_t *e;
+    if (c->in_net) {
+        if (c->cur < 0) {
+            return 0;
+        }
+        /* Entries beyond the caller's array are still syntax-checked
+         * into a throwaway slot. */
+        if (c->nets) {
+            e = &c->nets[c->cur];
+        } else {
+            memset(&tmp_entry, 0, sizeof(tmp_entry));
+            e = &tmp_entry;
+        }
+        if (strcmp(key, "ssid") == 0) {
+            if (strlen(value) > 32) {
+                return -1;
+            }
+            snprintf(e->ssid, sizeof(e->ssid), "%s", value);
+        } else if (strcmp(key, "pass") == 0) {
+            if (strlen(value) > 63) {
+                return -1;
+            }
+            snprintf(e->pass, sizeof(e->pass), "%s", value);
+        } else if (strcmp(key, "bssid") == 0) {
+            if (strlen(value) >= sizeof(e->bssid)) {
+                return -1;
+            }
+            snprintf(e->bssid, sizeof(e->bssid), "%s", value);
+        } else if (strcmp(key, "auth") == 0) {
+            if (strlen(value) >= sizeof(e->auth)) {
+                return -1;
+            }
+            snprintf(e->auth, sizeof(e->auth), "%s", value);
+        }
+    } else if (c->in_last) {
+        if (strcmp(key, "ssid") == 0) {
+            if (strlen(value) > 32) {
+                return -1;
+            }
+            if (c->last) {
+                snprintf(c->last, 33, "%s", value);
+            }
+            if (c->has_last) {
+                *c->has_last = 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static const nnode_cfg_cb_t sta_cb = { sta_section, sta_option, NULL };
+
+/* Parse the sta package into caller storage. nets may be NULL (entries
+ * skipped, last still parsed). fixup drops ssid-less entries and
+ * repairs bssid/auth the same way load always did. */
+static void sta_parse_all(nnode_net_cred_t *nets, int cap, int *nnets,
+    char *last, int *has_last, int strict)
+{
+    sta_ctx_t c;
+    int i;
+    memset(&c, 0, sizeof(c));
+    c.nets = nets;
+    c.cap = cap < 0 ? 0 : cap;
+    c.last = last;
+    c.has_last = has_last;
+    c.cur = -1;
+    c.strict = strict;
+    if (last) {
+        last[0] = 0;
+    }
+    if (has_last) {
+        *has_last = 0;
+    }
+    if (nnode_cfg_parse(NNOODE_CFG_PKG_STA, &sta_cb, &c) != 0) {
+        if (nnets) {
+            *nnets = 0;
+        }
+        if (last) {
+            last[0] = 0;
+        }
+        if (has_last) {
+            *has_last = 0;
+        }
+        return;
+    }
+    if (nets) {
+        int w = 0;
+        for (i = 0; i < c.nnets; i++) {
+            if (!nets[i].ssid[0]) {
+                continue;
+            }
+            if (!nnode_auth_valid(nets[i].auth)) {
+                strncpy(nets[i].auth, "auto", sizeof(nets[i].auth) - 1);
+            }
+            if (nets[i].bssid[0]) {
+                uint8_t m[6];
+                if (nnode_bssid_parse(nets[i].bssid, m) != 0) {
+                    nets[i].bssid[0] = 0;
+                }
+            }
+            if (w != i) {
+                nets[w] = nets[i];
+            }
+            w++;
+        }
+        if (nnets) {
+            *nnets = w;
+        }
+    } else if (nnets) {
+        *nnets = 0;
+    }
+}
+
+static int sta_store_arrays(const nnode_net_cred_t *nets, int nnets,
+    const char *last, int has_last)
+{
+    /* Heap buffer: httpd workers have 8 KB stacks, main task less. */
+    char *text = malloc(4096);
+    char e[160];
+    size_t o = 0;
+    int i;
+    if (!text) {
+        return -1;
+    }
+    o += snprintf(text + o, 4096 - o, "package sta\n");
+    for (i = 0; i < nnets && o < 4096; i++) {
+        o += snprintf(text + o, 4096 - o, "config net\n");
+        if (nnode_cfg_escape(nets[i].ssid, e, sizeof(e)) != 0) {
+            break;
+        }
+        o += snprintf(text + o, 4096 - o, "\toption ssid '%s'\n", e);
+        if (nnode_cfg_escape(nets[i].pass, e, sizeof(e)) != 0) {
+            break;
+        }
+        o += snprintf(text + o, 4096 - o, "\toption pass '%s'\n", e);
+        if (nnode_cfg_escape(nets[i].bssid, e, sizeof(e)) != 0) {
+            break;
+        }
+        o += snprintf(text + o, 4096 - o, "\toption bssid '%s'\n", e);
+        if (nnode_cfg_escape(nnode_auth_valid(nets[i].auth) ?
+                nets[i].auth : "auto", e, sizeof(e)) != 0) {
+            break;
+        }
+        o += snprintf(text + o, 4096 - o, "\toption auth '%s'\n", e);
+    }
+    if (o < 4096 && has_last && last) {
+        o += snprintf(text + o, 4096 - o, "config last 'last'\n");
+        if (nnode_cfg_escape(last, e, sizeof(e)) != 0) {
+            free(text);
+            return -1;
+        }
+        o += snprintf(text + o, 4096 - o, "\toption ssid '%s'\n", e);
+    }
+    if (o >= 4096 || i < nnets) {
+        free(text);
+        return -1;
+    }
+    {
+        int rc = nnode_cfg_write(NNOODE_CFG_PKG_STA, text);
+        free(text);
+        return rc;
+    }
+}
+
 int nnode_nets_load(nnode_net_cred_t *out, int max)
 {
-    char *blob = malloc(2048);
-    const char *p;
     int n = 0;
-    if (!blob) {
-        return 0;
-    }
     if (!out || max <= 0) {
-        free(blob);
         return 0;
     }
-    if (blob_get("nets", blob, 2048) != 0) {
-        free(blob);
-        return 0;
-    }
-    p = blob;
-    while (n < max) {
-        const char *o = strchr(p, '{');
-        const char *e;
-        char item[160];
-        if (!o) {
-            break;
-        }
-        e = strchr(o, '}');
-        if (!e || (size_t)(e - o) >= sizeof(item)) {
-            break;
-        }
-        memcpy(item, o, (size_t)(e - o) + 1);
-        item[e - o + 1] = 0;
-        if (unesc_val(item, "ssid", out[n].ssid, sizeof(out[n].ssid)) == 0 &&
-            unesc_val(item, "pass", out[n].pass, sizeof(out[n].pass)) == 0 &&
-            out[n].ssid[0]) {
-            /* bssid/auth were added later: old entries lack them */
-            if (unesc_val(item, "bssid", out[n].bssid, sizeof(out[n].bssid)) != 0) {
-                out[n].bssid[0] = 0;
-            }
-            if (unesc_val(item, "auth", out[n].auth, sizeof(out[n].auth)) != 0 ||
-                !nnode_auth_valid(out[n].auth)) {
-                strncpy(out[n].auth, "auto", sizeof(out[n].auth) - 1);
-            }
-            n++;
-        }
-        p = e + 1;
-    }
-    free(blob);
+    sta_parse_all(out, max, &n, NULL, NULL, 0);
     return n;
 }
 
 int nnode_nets_save(const nnode_net_cred_t *nets, int n)
 {
-    char *blob = malloc(2048);
-    char es[130];
-    size_t o = 0;
-    int i, rc;
-    if (!blob) {
+    char last[33];
+    int has_last = 0;
+    if (!nets && n > 0) {
         return -1;
     }
     if (n < 0) {
@@ -175,23 +266,9 @@ int nnode_nets_save(const nnode_net_cred_t *nets, int n)
     if (n > NNODE_MAX_NETS) {
         n = NNODE_MAX_NETS;
     }
-    o += snprintf(blob + o, 2048 - o, "[");
-    for (i = 0; i < n && o < 2048; i++) {
-        esc(nets[i].ssid, es, sizeof(es));
-        o += snprintf(blob + o, 2048 - o, "%s{\"ssid\":\"%s\",", i ? "," : "", es);
-        esc(nets[i].pass, es, sizeof(es));
-        o += snprintf(blob + o, 2048 - o, "\"pass\":\"%s\",", es);
-        esc(nets[i].bssid, es, sizeof(es));
-        o += snprintf(blob + o, 2048 - o, "\"bssid\":\"%s\",", es);
-        esc(nnode_auth_valid(nets[i].auth) ? nets[i].auth : "auto", es, sizeof(es));
-        o += snprintf(blob + o, 2048 - o, "\"auth\":\"%s\"}", es);
-    }
-    if (o < 2048) {
-        o += snprintf(blob + o, 2048 - o, "]");
-    }
-    rc = blob_set("nets", blob);
-    free(blob);
-    return rc;
+    /* last section is preserved as stored. */
+    sta_parse_all(NULL, 0, NULL, last, &has_last, 0);
+    return sta_store_arrays(nets, n, last, has_last);
 }
 
 /* bssid NULL/"" = any, auth NULL/"" = "auto".
@@ -230,50 +307,60 @@ static int cred_fix_bssid_auth(nnode_net_cred_t *c, const char *bssid, const cha
 int nnode_nets_add(const char *ssid, const char *pass, const char *bssid, const char *auth)
 {
     nnode_net_cred_t nets[NNODE_MAX_NETS];
-    int n, i;
+    char last[33];
+    int has_last = 0, nnets = 0, i;
     if (!ssid || !ssid[0] || strlen(ssid) > 32 || !pass || strlen(pass) > 63) {
         return -1;
     }
-    n = nnode_nets_load(nets, NNODE_MAX_NETS);
-    for (i = 0; i < n; i++) {
+    sta_parse_all(nets, NNODE_MAX_NETS, &nnets, last, &has_last, 0);
+    for (i = 0; i < nnets; i++) {
         if (strcmp(nets[i].ssid, ssid) == 0) {
             strncpy(nets[i].pass, pass, sizeof(nets[i].pass) - 1);
             nets[i].pass[sizeof(nets[i].pass) - 1] = 0;
             if (cred_fix_bssid_auth(&nets[i], bssid, auth) != 0) {
                 return -1;
             }
-            return nnode_nets_save(nets, n) == 0 ? n : -1;
+            return sta_store_arrays(nets, nnets, last, has_last) == 0 ? nnets : -1;
         }
     }
-    if (n >= NNODE_MAX_NETS) {
+    if (nnets >= NNODE_MAX_NETS) {
         return -1;
     }
-    strncpy(nets[n].ssid, ssid, sizeof(nets[n].ssid) - 1);
-    nets[n].ssid[sizeof(nets[n].ssid) - 1] = 0;
-    strncpy(nets[n].pass, pass, sizeof(nets[n].pass) - 1);
-    nets[n].pass[sizeof(nets[n].pass) - 1] = 0;
-    nets[n].bssid[0] = 0;
-    strncpy(nets[n].auth, "auto", sizeof(nets[n].auth) - 1);
-    if (cred_fix_bssid_auth(&nets[n], bssid, auth) != 0) {
+    strncpy(nets[nnets].ssid, ssid, sizeof(nets[nnets].ssid) - 1);
+    nets[nnets].ssid[sizeof(nets[nnets].ssid) - 1] = 0;
+    strncpy(nets[nnets].pass, pass, sizeof(nets[nnets].pass) - 1);
+    nets[nnets].pass[sizeof(nets[nnets].pass) - 1] = 0;
+    nets[nnets].bssid[0] = 0;
+    strncpy(nets[nnets].auth, "auto", sizeof(nets[nnets].auth) - 1);
+    if (cred_fix_bssid_auth(&nets[nnets], bssid, auth) != 0) {
         return -1;
     }
-    return nnode_nets_save(nets, n + 1) == 0 ? n + 1 : -1;
+    nnets++;
+    return sta_store_arrays(nets, nnets, last, has_last) == 0 ? nnets : -1;
 }
 
 int nnode_nets_forget(const char *ssid)
 {
     nnode_net_cred_t nets[NNODE_MAX_NETS];
-    int n, i, j;
+    char last[33];
+    int has_last = 0, nnets = 0;
+    int i, j;
     if (!ssid) {
         return -1;
     }
-    n = nnode_nets_load(nets, NNODE_MAX_NETS);
-    for (i = 0; i < n; i++) {
+    sta_parse_all(nets, NNODE_MAX_NETS, &nnets, last, &has_last, 0);
+    for (i = 0; i < nnets; i++) {
         if (strcmp(nets[i].ssid, ssid) == 0) {
-            for (j = i; j + 1 < n; j++) {
+            for (j = i; j + 1 < nnets; j++) {
                 nets[j] = nets[j + 1];
             }
-            return nnode_nets_save(nets, n - 1);
+            nnets--;
+            /* Forgetting the last-ok network clears the marker too. */
+            if (has_last && strcmp(last, ssid) == 0) {
+                has_last = 0;
+                last[0] = 0;
+            }
+            return sta_store_arrays(nets, nnets, last, has_last);
         }
     }
     return -1;
@@ -282,12 +369,12 @@ int nnode_nets_forget(const char *ssid)
 int nnode_nets_get(const char *ssid, nnode_net_cred_t *out)
 {
     nnode_net_cred_t nets[NNODE_MAX_NETS];
-    int n, i;
+    int nnets = 0, i;
     if (!ssid || !out) {
         return -1;
     }
-    n = nnode_nets_load(nets, NNODE_MAX_NETS);
-    for (i = 0; i < n; i++) {
+    sta_parse_all(nets, NNODE_MAX_NETS, &nnets, NULL, NULL, 0);
+    for (i = 0; i < nnets; i++) {
         if (strcmp(nets[i].ssid, ssid) == 0) {
             *out = nets[i];
             return 0;
@@ -302,12 +389,14 @@ int nnode_nets_update(const char *old, const char *new_ssid,
     const char *auth, int set_auth)
 {
     nnode_net_cred_t nets[NNODE_MAX_NETS];
-    int n, i, idx = -1;
+    char last[33];
+    int has_last = 0, nnets = 0;
+    int i, idx = -1;
     if (!old || !old[0]) {
         return -1;
     }
-    n = nnode_nets_load(nets, NNODE_MAX_NETS);
-    for (i = 0; i < n; i++) {
+    sta_parse_all(nets, NNODE_MAX_NETS, &nnets, last, &has_last, 0);
+    for (i = 0; i < nnets; i++) {
         if (strcmp(nets[i].ssid, old) == 0) {
             idx = i;
             break;
@@ -321,13 +410,16 @@ int nnode_nets_update(const char *old, const char *new_ssid,
         if (strlen(new_ssid) > 32) {
             return -1;
         }
-        for (j = 0; j < n; j++) {
+        for (j = 0; j < nnets; j++) {
             if (j != idx && strcmp(nets[j].ssid, new_ssid) == 0) {
                 return -2;
             }
         }
         strncpy(nets[idx].ssid, new_ssid, sizeof(nets[idx].ssid) - 1);
         nets[idx].ssid[sizeof(nets[idx].ssid) - 1] = 0;
+        if (has_last && strcmp(last, old) == 0) {
+            snprintf(last, sizeof(last), "%s", new_ssid);
+        }
     }
     if (set_pass) {
         if (!pass || strlen(pass) > 63) {
@@ -340,105 +432,241 @@ int nnode_nets_update(const char *old, const char *new_ssid,
             set_bssid ? bssid : NULL, set_auth ? auth : NULL) != 0) {
         return -1;
     }
-    return nnode_nets_save(nets, n);
+    return sta_store_arrays(nets, nnets, last, has_last);
 }
 
 int nnode_last_get(char *ssid, unsigned len)
 {
-    nvs_handle_t h;
-    size_t l = len;
+    char last[33];
+    int has_last = 0;
     if (!ssid || !len) {
         return -1;
     }
-    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) {
+    sta_parse_all(NULL, 0, NULL, last, &has_last, 0);
+    if (!has_last) {
         return -1;
     }
-    if (nvs_get_str(h, "last", ssid, &l) != ESP_OK) {
-        nvs_close(h);
-        return -1;
-    }
-    nvs_close(h);
+    snprintf(ssid, len, "%s", last);
     return 0;
 }
 
 int nnode_last_set(const char *ssid)
 {
-    nvs_handle_t h;
-    esp_err_t r;
-    if (!ssid) {
+    nnode_net_cred_t nets[NNODE_MAX_NETS];
+    char last[33];
+    int has_last = 0, nnets = 0;
+    if (!ssid || strlen(ssid) > 32) {
         return -1;
     }
-    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) {
-        return -1;
-    }
-    r = nvs_set_str(h, "last", ssid);
-    if (r == ESP_OK) {
-        r = nvs_commit(h);
-    }
-    nvs_close(h);
-    return r == ESP_OK ? 0 : -1;
+    sta_parse_all(nets, NNODE_MAX_NETS, &nnets, last, &has_last, 0);
+    snprintf(last, sizeof(last), "%s", ssid);
+    has_last = 1;
+    return sta_store_arrays(nets, nnets, last, has_last);
 }
+
+/* In-memory image of the ap package. */
+typedef struct {
+    nnode_ap_cfg_t ap;
+    int has_ssid;
+    int has_auth;
+    int has_pass;
+    int has_mode;
+    int has_nat;
+    int in_ap;
+    int strict;
+} ap_ctx_t;
+
+static int ap_section(void *ctx, const char *type, const char *name, int has_name)
+{
+    ap_ctx_t *c = ctx;
+    (void)name;
+    (void)has_name;
+    c->in_ap = strcmp(type, "ap") == 0;
+    if (!c->in_ap && c->strict) {
+        return -1;
+    }
+    return 0;
+}
+
+static int ap_option(void *ctx, const char *key, const char *value)
+{
+    ap_ctx_t *c = ctx;
+    if (!c->in_ap) {
+        return 0;
+    }
+    if (strcmp(key, "ssid") == 0) {
+        if (strlen(value) > 32) {
+            return -1;
+        }
+        snprintf(c->ap.ssid, sizeof(c->ap.ssid), "%s", value);
+        c->has_ssid = 1;
+    } else if (strcmp(key, "auth") == 0) {
+        if (strlen(value) >= sizeof(c->ap.auth)) {
+            return -1;
+        }
+        snprintf(c->ap.auth, sizeof(c->ap.auth), "%s", value);
+        c->has_auth = 1;
+    } else if (strcmp(key, "pass") == 0) {
+        if (strlen(value) > 63) {
+            return -1;
+        }
+        snprintf(c->ap.pass, sizeof(c->ap.pass), "%s", value);
+        c->has_pass = 1;
+    } else if (strcmp(key, "mode") == 0) {
+        if (strlen(value) >= sizeof(c->ap.mode)) {
+            return -1;
+        }
+        snprintf(c->ap.mode, sizeof(c->ap.mode), "%s", value);
+        c->has_mode = 1;
+    } else if (strcmp(key, "nat") == 0) {
+        c->ap.nat = value[0] == '1' ? 1 : 0;
+        c->has_nat = 1;
+    }
+    return 0;
+}
+
+static const nnode_cfg_cb_t ap_cb = { ap_section, ap_option, NULL };
 
 int nnode_ap_load(nnode_ap_cfg_t *out)
 {
-    char blob[256];
+    ap_ctx_t c;
     if (!out) {
         return -1;
     }
-    if (blob_get("ap", blob, sizeof(blob)) != 0) {
+    memset(&c, 0, sizeof(c));
+    if (nnode_cfg_parse(NNOODE_CFG_PKG_AP, &ap_cb, &c) != 0) {
         return -1;
     }
-    if (unesc_val(blob, "ssid", out->ssid, sizeof(out->ssid)) != 0 || !out->ssid[0]) {
+    if (!c.has_ssid || !c.ap.ssid[0] || !c.has_auth) {
         return -1;
     }
-    if (unesc_val(blob, "auth", out->auth, sizeof(out->auth)) != 0) {
-        return -1;
+    if (!c.has_mode) {
+        strncpy(c.ap.mode, "auto", sizeof(c.ap.mode) - 1);
     }
-    if (unesc_val(blob, "pass", out->pass, sizeof(out->pass)) != 0) {
-        return -1;
-    }
-    if (unesc_val(blob, "mode", out->mode, sizeof(out->mode)) != 0) {
-        strncpy(out->mode, "auto", sizeof(out->mode) - 1);
-    }
-    {
-        const char *p = strstr(blob, "\"nat\":");
-        out->nat = (p && atoi(p + 6)) ? 1 : 0;
-    }
+    *out = c.ap;
+    ESP_LOGI(TAG, "ap load ssid=%s", c.ap.ssid);
     return 0;
 }
 
 int nnode_ap_save(const nnode_ap_cfg_t *cfg)
 {
-    char blob[256];
-    char es[130];
+    char text[512];
+    char e[160];
     size_t o = 0;
     if (!cfg || !cfg->ssid[0]) {
         return -1;
     }
-    o += snprintf(blob + o, sizeof(blob) - o, "{");
-    esc(cfg->ssid, es, sizeof(es));
-    o += snprintf(blob + o, sizeof(blob) - o, "\"ssid\":\"%s\",", es);
-    esc(cfg->auth, es, sizeof(es));
-    o += snprintf(blob + o, sizeof(blob) - o, "\"auth\":\"%s\",", es);
-    esc(cfg->pass, es, sizeof(es));
-    o += snprintf(blob + o, sizeof(blob) - o, "\"pass\":\"%s\",", es);
-    esc(cfg->mode[0] ? cfg->mode : "auto", es, sizeof(es));
-    o += snprintf(blob + o, sizeof(blob) - o, "\"mode\":\"%s\",", es);
-    o += snprintf(blob + o, sizeof(blob) - o, "\"nat\":%d}", cfg->nat ? 1 : 0);
-    return blob_set("ap", blob);
+    o += snprintf(text + o, sizeof(text) - o, "package ap\nconfig ap 'main'\n");
+    if (nnode_cfg_escape(cfg->ssid, e, sizeof(e)) != 0) {
+        return -1;
+    }
+    o += snprintf(text + o, sizeof(text) - o, "\toption ssid '%s'\n", e);
+    if (nnode_cfg_escape(cfg->auth, e, sizeof(e)) != 0) {
+        return -1;
+    }
+    o += snprintf(text + o, sizeof(text) - o, "\toption auth '%s'\n", e);
+    if (nnode_cfg_escape(cfg->pass, e, sizeof(e)) != 0) {
+        return -1;
+    }
+    o += snprintf(text + o, sizeof(text) - o, "\toption pass '%s'\n", e);
+    if (nnode_cfg_escape(cfg->mode[0] ? cfg->mode : "auto", e, sizeof(e)) != 0) {
+        return -1;
+    }
+    o += snprintf(text + o, sizeof(text) - o, "\toption mode '%s'\n", e);
+    o += snprintf(text + o, sizeof(text) - o, "\toption nat '%d'\n", cfg->nat ? 1 : 0);
+    if (o >= sizeof(text)) {
+        return -1;
+    }
+    return nnode_cfg_write(NNOODE_CFG_PKG_AP, text);
+}
+
+int nnode_sta_validate(const char *text)
+{
+    nnode_net_cred_t nets[NNODE_MAX_NETS];
+    sta_ctx_t c;
+    int i, nnets;
+    static const nnode_cfg_cb_t cb = { sta_section, sta_option, NULL };
+    if (!text) {
+        return -1;
+    }
+    memset(&c, 0, sizeof(c));
+    memset(nets, 0, sizeof(nets));
+    c.nets = nets;
+    c.cap = NNODE_MAX_NETS;
+    c.cur = -1;
+    c.strict = 1;
+    if (nnode_cfg_parse_text(NNOODE_CFG_PKG_STA, text, &cb, &c) != 0) {
+        return -1;
+    }
+    if (c.total > NNODE_MAX_NETS) {
+        return -1;
+    }
+    nnets = c.nnets > NNODE_MAX_NETS ? NNODE_MAX_NETS : c.nnets;
+    for (i = 0; i < nnets; i++) {
+        nnode_net_cred_t e = nets[i];
+        uint8_t m[6];
+        if (!e.ssid[0] || strlen(e.ssid) > 32 || strlen(e.pass) > 63) {
+            return -1;
+        }
+        if (!e.auth[0]) {
+            strncpy(e.auth, "auto", sizeof(e.auth) - 1);
+        }
+        if (!nnode_auth_valid(e.auth)) {
+            return -1;
+        }
+        if (e.bssid[0] && nnode_bssid_parse(e.bssid, m) != 0) {
+            return -1;
+        }
+        if (strcmp(e.auth, "open") == 0 && e.pass[0]) {
+            return -1;
+        }
+        if ((strcmp(e.auth, "wpa") == 0 || strcmp(e.auth, "wpa2") == 0 ||
+                strcmp(e.auth, "wpa3") == 0) && !e.pass[0]) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int nnode_ap_validate(const char *text)
+{
+    ap_ctx_t c;
+    static const nnode_cfg_cb_t cb = { ap_section, ap_option, NULL };
+    if (!text) {
+        return -1;
+    }
+    memset(&c, 0, sizeof(c));
+    c.strict = 1;
+    if (nnode_cfg_parse_text(NNOODE_CFG_PKG_AP, text, &cb, &c) != 0) {
+        return -1;
+    }
+    if (!c.has_ssid || !c.ap.ssid[0] || strlen(c.ap.ssid) > 32) {
+        return -1;
+    }
+    if (!c.has_auth || (strcmp(c.ap.auth, "open") != 0 &&
+            strcmp(c.ap.auth, "wpa2") != 0 &&
+            strcmp(c.ap.auth, "wpa_wpa2") != 0)) {
+        return -1;
+    }
+    if (c.has_mode && strcmp(c.ap.mode, "auto") != 0 &&
+        strcmp(c.ap.mode, "always") != 0) {
+        return -1;
+    }
+    if (strcmp(c.ap.auth, "open") == 0) {
+        if (c.ap.pass[0] != 0) {
+            return -1;
+        }
+    } else if (strlen(c.ap.pass) < 8 || strlen(c.ap.pass) > 63) {
+        return -1;
+    }
+    return 0;
 }
 
 int nnode_ap_clear(void)
 {
-    nvs_handle_t h;
-    esp_err_t r;
-    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) {
-        return -1;
+    /* Missing file means "no AP saved": same as before with the key. */
+    if (!nnode_cfg_exists(NNOODE_CFG_PKG_AP)) {
+        return 0;
     }
-    r = nvs_erase_key(h, "ap");
-    if (r == ESP_OK || r == ESP_ERR_NVS_NOT_FOUND) {
-        r = nvs_commit(h);
-    }
-    nvs_close(h);
-    return r == ESP_OK ? 0 : -1;
+    return nnode_cfg_remove(NNOODE_CFG_PKG_AP);
 }

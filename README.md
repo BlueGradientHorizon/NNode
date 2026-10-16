@@ -20,8 +20,9 @@ assets and fits easily next to your application.
 - Access point with `auto` and `always` modes, optional IPv4 NAT relay that
   shares the station uplink, and DHCP-served DNS
 - Diagnostics with live output: ping, traceroute and nslookup
-- File manager for the LittleFS `/data` partition: upload, download, delete
-- ELF program loader: run, stop and unload modules stored in `/data`
+- File manager for the LittleFS `/data` partition: subdirectories,
+  upload, download, delete
+- ELF program loader: run, stop and unload modules stored in `/data/programs`
 - One-file backup and restore (CBOR) plus factory reset
 - Hostname, timezone, NTP/SNTP, 12/24-hour clock and RU/EN language settings
 - Hash routing (`#/section/page`), served over plain HTTP
@@ -102,21 +103,43 @@ The firmware runs `esp_http_server` with a small JSON REST API:
   `POST /api/files/upload`, `POST /api/files/delete`,
   `POST /api/elf/run`, `POST /api/elf/stop`, `POST /api/elf/unload`
 - backup: `GET /api/backup`, `POST /api/backup/restore`,
-  `POST /api/factory-reset`
+  `POST /api/factory-reset`, `GET /api/config/export`
 
-Settings live in the `nnode` NVS namespace (saved networks, AP config,
-hostname, NTP, timezone); user files live in LittleFS on `/data`.
-A station watchdog keeps retrying known networks and falls back to the
+Settings live in text files under `/data/config` (one file per package:
+`device`, `time`, `sta`, `ap`); user files live in LittleFS on `/data`.
+`nvs_flash_init` stays only because the IDF WiFi driver requires it -
+no NNode setting is stored in NVS. A station watchdog keeps retrying
+known networks and falls back to the
 access point after 10 seconds without a connection.
+
+Each settings package is a text file with `package` / `config` /
+`option` / `list` lines, e.g. `/data/config/time`:
+
+```
+package time
+config clock 'clock'
+        option tz 'UTC0'
+        option zonename ''
+config ntp 'ntp'
+        option enabled '1'
+        list server 'pool.ntp.org'
+```
+
+`device` holds the stable id and hostname, `sta` the saved networks
+(one `config net` section each) plus the last-ok marker, `ap` the
+access point. All four files are seeded with defaults on the first
+boot; later every change rewrites its file immediately.
+`GET /api/config/export` returns all packages concatenated, and the
+CBOR backup embeds each package text plus the plain `/data` files.
 
 ### Limits
 
 - At most 8 saved WiFi networks; SSID is 1-32 chars, passphrase is 0-63
-  chars (PSK or open networks only, no Enterprise or WEP); passphrases are
-  stored in NVS as plain text.
-- Filenames in `/data` may not contain `/` or `..` and are capped at
-  64 chars; only `.elf` files can be executed, and up to 8 modules stay
-  loaded at once.
+   chars (PSK or open networks only, no Enterprise or WEP); passphrases are
+   stored in `/data/config` as plain text.
+- Path segments in `/data` may not be `.` or contain `/` or `..` and are
+   capped at 64 chars (8 levels, 128 chars total); only `.elf` files in
+   `/data/programs` can be executed, and up to 8 modules stay loaded at once.
 - Only tasks named `nnode_*` can be stopped from the Processes page.
 
 ### Flash layout (4 MB, offsets are fixed - never move `storage`)
@@ -137,7 +160,7 @@ NNode/
                   generated preview in src_web/inlined/ (not committed)
   tools/          build helpers: web_inline.py (minify, inline, gzip),
                   gen_modsym.py (ELF module symbol table)
-  main/           firmware: REST API, WiFi, NVS settings, LittleFS, ELF runner
+   main/           firmware: REST API, WiFi, file-backed settings, LittleFS, ELF runner
   examples/       loadable ELF module sources (blink for esp32c3);
                   built via examples/build.py <target> <action> <app> into
                   build-<target>/modules/, nothing generated inside

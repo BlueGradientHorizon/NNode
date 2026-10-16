@@ -23,6 +23,8 @@ static int s_ap_always;
 static int s_nat_on;
 static int s_manual;
 static char s_cur[33];
+static char s_last_pending[33];
+static TaskHandle_t s_cfgwr;
 static int64_t s_sta_ip_us;
 static int64_t s_ap_up_us;
 static esp_timer_handle_t s_ap_timer;
@@ -31,6 +33,20 @@ static esp_timer_handle_t s_ap_timer;
 static void ap_enable(void);
 static void ap_disable(void);
 static void nat_dns_apply(void);
+static void on_wifi(void *a, esp_event_base_t b, int32_t id, void *d);
+
+/* File writes do not fit the tiny sys_evt task stack, so the IP
+ * handler only stages the SSID here; the worker below commits it. */
+static void cfgwr_task(void *a)
+{
+    (void)a;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_last_pending[0] && nnode_last_set(s_last_pending) != 0) {
+            ESP_LOGW(TAG, "last save failed");
+        }
+    }
+}
 
 static void ap_enable(void)
 {
@@ -175,7 +191,8 @@ static void on_ip(void *a, esp_event_base_t b, int32_t id, void *d)
         s_manual = 0;
         s_sta_ip_us = esp_timer_get_time();
         esp_timer_stop(s_ap_timer);
-        nnode_last_set(s_cur);
+        snprintf(s_last_pending, sizeof(s_last_pending), "%s", s_cur);
+        xTaskNotifyGive(s_cfgwr);
         xEventGroupSetBits(s_ev, GOT_BIT);
         nat_refresh();
         ap_disable();
@@ -243,10 +260,21 @@ static void ap_apply_cfg(const nnode_ap_cfg_t *c)
 void nnode_wifi_start(void)
 {
     nnode_ap_cfg_t ap;
-    nnode_net_cred_t nets[NNODE_MAX_NETS];
+    /* Heap array: main task stack is ~4 KB, 8 entries do not fit it
+     * next to the IDF wifi init frames. */
+    nnode_net_cred_t *nets = malloc(NNODE_MAX_NETS * sizeof(*nets));
     int n, i, li;
     char last[33];
+    if (!nets) {
+        ESP_LOGE(TAG, "no mem for nets");
+        return;
+    }
     s_ev = xEventGroupCreate();
+    if (xTaskCreate(cfgwr_task, "nnode_cfgwr", 8192, NULL, 5, &s_cfgwr) != pdPASS) {
+        ESP_LOGE(TAG, "cfgwr task failed");
+        free(nets);
+        return;
+    }
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_sta = esp_netif_create_default_wifi_sta();
@@ -259,9 +287,10 @@ void nnode_wifi_start(void)
     {
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-        /* Driver must not persist STA creds on its own: the nnode NVS
-         * store is the single source of truth (else "forgotten" nets
-         * keep reconnecting and empty-nets boot never reaches AP). */
+        /* Driver must not persist STA creds on its own: the config
+         * files under /data/config are the single source of truth
+         * (else "forgotten" nets keep reconnecting and empty-nets
+         * boot never reaches AP). */
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     }
     {
@@ -287,6 +316,7 @@ void nnode_wifi_start(void)
         ESP_ERROR_CHECK(esp_wifi_start());
         s_ap_up = 1;
         s_ap_up_us = esp_timer_get_time();
+        free(nets);
         return;
     }
     if (nnode_last_get(last, sizeof(last)) == 0 && last[0]) {
@@ -317,11 +347,13 @@ void nnode_wifi_start(void)
         bits = xEventGroupWaitBits(s_ev, GOT_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(9000));
         if (bits & GOT_BIT) {
             ESP_LOGI(TAG, "connected ssid=%s", nets[i].ssid);
+            free(nets);
             return;
         }
     }
     ESP_LOGE(TAG, "all saved nets failed, AP mode");
     ap_enable();
+    free(nets);
 }
 
 int nnode_sta_connect(const char *ssid, const char *pass)

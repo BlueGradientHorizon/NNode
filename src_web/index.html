@@ -176,7 +176,7 @@
   </section>
   <section id="page-programs" hidden>
     <h2 data-i18n="p_modules">Программы</h2>
-    <p class="descr" data-i18n="d_modules">ELF-модули в /data: запуск и завершение.</p>
+    <p class="descr" data-i18n="d_modules">ELF-модули в /data/programs: запуск и завершение.</p>
     <table class="table"><thead><tr>
       <th data-i18n="col_name">Имя</th>
       <th data-i18n="col_size">Размер</th>
@@ -233,8 +233,11 @@
     <h2 data-i18n="p_files">Файлы</h2>
     <p class="descr" data-i18n="d_files">Файлы в разделе /data.</p>
     <div id="files-space"><div id="files-space-text"></div><div class="ov-bar"><div id="files-space-fill" class="ov-fill"></div></div></div>
+    <p id="files-path">/data</p>
     <p><input id="file-pick" type="file">
         <button id="file-upload" class="btn btn-primary" type="button" data-i18n="upload">Загрузить</button></p>
+    <p><span data-i18n="new_dir">Новая папка</span> <input id="dir-pick" type="text" size="16">
+        <button id="dir-make" class="btn" type="button" data-i18n="mkdir">Создать папку</button></p>
     <table class="table"><thead><tr>
       <th data-i18n="col_name">Имя</th>
       <th data-i18n="col_size">Размер</th>

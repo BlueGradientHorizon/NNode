@@ -127,7 +127,7 @@
       get("/api/sys", renderSys);
     };
     if (k === "programs/modules") return function () {
-      get("/api/files", renderAll);
+      get("/api/files?dir=programs", renderModules);
     };
     if (k === "network/interfaces") return function () {
       get("/api/net", renderNet); get("/api/ap/stations", renderStations);
@@ -140,7 +140,7 @@
       get("/api/net", renderNet);
     };
     if (k === "files/files") return function () {
-      get("/api/files", renderAll);
+      loadFiles();
       get("/api/sys", renderFilesSys);
     };
     return null;
@@ -1201,29 +1201,77 @@
       t("free") + ")";
     fill.style.width = pct.toFixed(1) + "%";
   }
-  function renderFiles(arr) {
+  function renderFiles(arr, dir) {
     var tb = document.getElementById("files-body");
+    var pl = document.getElementById("files-path");
+    dir = dir || "";
     tb.innerHTML = "";
-    arr.forEach(function (x) {
+    pl.textContent = "/data" + (dir ? "/" + dir : "");
+    function navTo(d) {
+      curDir = d;
+      loadFiles();
+    }
+    function navLink(label, d) {
+      var a = document.createElement("a");
+      a.href = "#";
+      a.textContent = label;
+      a.onclick = function (e) {
+        if (e) e.preventDefault();
+        navTo(d);
+        return false;
+      };
+      return a;
+    }
+    if (dir) {
+      var up = dir.indexOf("/") >= 0 ? dir.slice(0, dir.lastIndexOf("/")) : "";
       var tr = document.createElement("tr");
       tr.innerHTML = "<td></td><td></td><td></td>";
-      tr.children[0].textContent = x.name;
-      tr.children[1].textContent = x.size + " B";
-      var bd = mkbtn(t("download"), "", function () {
-        window.location = "/api/files/download?name=" + encodeURIComponent(x.name);
-      });
+      tr.children[0].appendChild(navLink("../", up));
+      tr.children[1].textContent = "-";
+      tb.appendChild(tr);
+    }
+    /* Directories first, files after. */
+    arr.forEach(function (x) {
+      if (!x.dir) return;
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td></td><td></td><td></td>";
+      var full = dir ? dir + "/" + x.name : x.name;
+      tr.children[0].appendChild(navLink(x.name + "/", full));
+      tr.children[1].textContent = "-";
       var bx = mkbtn(t("delete"), "btn-danger", (function (s) { return function () {
         confirmModal(t("del_file_confirm").replace("{s}", s), function () {
           fetch("/api/files/delete?name=" + encodeURIComponent(s), { method: "POST" })
             .then(function () {
-              get("/api/files", renderAll);
+              loadFiles();
               get("/api/sys", renderFilesSys);
             });
         }, "delete");
-      }; })(x.name));
+      }; })(full));
+      tr.children[2].appendChild(bx);
+      tb.appendChild(tr);
+    });
+    arr.forEach(function (x) {
+      if (x.dir) return;
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td></td><td></td><td></td>";
+      var full = dir ? dir + "/" + x.name : x.name;
+      tr.children[0].textContent = x.name;
+      tr.children[1].textContent = x.size + " B";
+      var bd = mkbtn(t("download"), "", (function (s) { return function () {
+        window.location = "/api/files/download?name=" + encodeURIComponent(s);
+      }; })(full));
+      var bx2 = mkbtn(t("delete"), "btn-danger", (function (s) { return function () {
+        confirmModal(t("del_file_confirm").replace("{s}", s), function () {
+          fetch("/api/files/delete?name=" + encodeURIComponent(s), { method: "POST" })
+            .then(function () {
+              loadFiles();
+              get("/api/sys", renderFilesSys);
+            });
+        }, "delete");
+      }; })(full));
       tr.children[2].appendChild(bd);
       tr.children[2].appendChild(document.createTextNode(" "));
-      tr.children[2].appendChild(bx);
+      tr.children[2].appendChild(bx2);
       tb.appendChild(tr);
     });
   }
@@ -1242,7 +1290,8 @@
           .then(function (r) { return r.json(); }).then(function (j) {
             if (j.ok) toast("toast_started", true);
             else toastErr(j);
-            get("/api/files", renderAll);
+            loadFiles();
+            loadModules();
           }).catch(function () {
             toastErr();
           });
@@ -1250,7 +1299,8 @@
       var bu = mkbtn(t("stop"), "btn-danger", (function (s) { return function () {
         fetch("/api/elf/stop?name=" + encodeURIComponent(s), { method: "POST" })
           .then(function () {
-            get("/api/files", renderAll);
+            loadFiles();
+            loadModules();
             get("/api/tasks", renderTasks);
           });
       }; })(x.name), !x.loaded);
@@ -1260,24 +1310,52 @@
       tb.appendChild(tr);
     });
   }
-  function renderAll(arr) {
-    renderFiles(arr);
-    renderModules(arr);
+  var curDir = "";
+  function filesUrl(d) {
+    return "/api/files" + (d ? "?dir=" + encodeURIComponent(d) : "");
+  }
+  function loadFiles() {
+    get(filesUrl(curDir), function (arr) { renderAll(arr, curDir); });
+  }
+  function loadModules() {
+    get("/api/files?dir=programs", renderModules);
+  }
+  function renderAll(arr, dir) {
+    renderFiles(arr, dir || "");
+    /* Modules live in programs/, keep their table on that listing. */
+    if (!dir) loadModules();
   }
   document.getElementById("file-upload").onclick = function () {
     var f = document.getElementById("file-pick").files[0];
     if (!f) return;
-    fetch("/api/files/upload?name=" + encodeURIComponent(f.name), {
+    var up = curDir ? curDir + "/" + f.name : f.name;
+    fetch("/api/files/upload?name=" + encodeURIComponent(up), {
       method: "POST",
       body: f
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (j.ok) toast("toast_uploaded", true);
       else toastErr(j);
-      get("/api/files", renderAll);
+      loadFiles();
       get("/api/sys", renderFilesSys);
     }).catch(function () {
       toastErr();
     });
+  };
+  document.getElementById("dir-make").onclick = function () {
+    var d = document.getElementById("dir-pick");
+    var nm = d.value.replace(/^\s+|\s+$/g, "");
+    if (!nm) return;
+    var full = curDir ? curDir + "/" + nm : nm;
+    fetch("/api/files/mkdir?name=" + encodeURIComponent(full), { method: "POST" })
+      .then(function (r) { return r.json(); }).then(function (j) {
+        if (j.ok) {
+          d.value = "";
+          toast("toast_uploaded", true);
+        } else toastErr(j);
+        loadFiles();
+      }).catch(function () {
+        toastErr();
+      });
   };
   function renderStations(arr) {
     arr = Array.isArray(arr) ? arr : [];

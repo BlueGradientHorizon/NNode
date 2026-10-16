@@ -22,3 +22,6 @@ typedef struct { char ssid[33]; char auth[8]; char pass[64]; char mode[8]; int n
 int nnode_ap_load(nnode_ap_cfg_t *out);
 int nnode_ap_save(const nnode_ap_cfg_t *cfg);
 int nnode_ap_clear(void);
+/* Validate a sta/ap package text before committing it. */
+int nnode_sta_validate(const char *text);
+int nnode_ap_validate(const char *text);

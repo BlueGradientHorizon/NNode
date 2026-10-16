@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -40,8 +41,7 @@ static const char *TAG = "nnode_http";
  * Settings (400 bad value): ap, hostname, ntp, servers, tz, nets.
  * WiFi: need_pass (400 password required), connect (400 connect failed),
  * exists (409 SSID already saved).
- * Backup restore (400): parse, version, hostname, ntp, nets, ap,
- * wipe, files, space, last, tz.
+ * Backup restore (400): parse, version, config, wipe, files, space.
  * Modules: bad_name, not_elf, already_loaded, no_slots, no_mem,
  * elf_open, elf_init, elf_relocate, tasks_running (409 live tasks).
  * Files: open (500 cannot create), write (500 write failed).
@@ -73,6 +73,7 @@ static esp_err_t h_files(httpd_req_t *r);
 static esp_err_t h_download(httpd_req_t *r);
 static esp_err_t h_upload(httpd_req_t *r);
 static esp_err_t h_fdelete(httpd_req_t *r);
+static esp_err_t h_mkdir(httpd_req_t *r);
 static esp_err_t h_elfrun(httpd_req_t *r);
 static esp_err_t h_elfunload(httpd_req_t *r);
 static esp_err_t h_elfstop(httpd_req_t *r);
@@ -84,6 +85,7 @@ static esp_err_t h_ntpsync(httpd_req_t *r);
 static esp_err_t h_hostname(httpd_req_t *r);
 static esp_err_t h_tz(httpd_req_t *r);
 static esp_err_t h_backup(httpd_req_t *r);
+static esp_err_t h_cfgexport(httpd_req_t *r);
 static esp_err_t h_restore(httpd_req_t *r);
 static esp_err_t h_reset(httpd_req_t *r);
 static esp_err_t h_stacon(httpd_req_t *r);
@@ -144,7 +146,7 @@ void nnode_http_start(void)
 {
     httpd_handle_t h = NULL;
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
-    c.max_uri_handlers = 44;
+    c.max_uri_handlers = 48;
     /* 8 KB: console logging (ESP_LOG over USB-JTAG) plus TLS-less chunked
      * IO no longer fit 6 KB once the backup handlers landed. */
     c.stack_size = 8192;
@@ -202,6 +204,7 @@ void nnode_http_start(void)
     static const httpd_uri_t u_dl = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_download };
     static const httpd_uri_t u_ul = { .uri = "/api/files/upload", .method = HTTP_POST, .handler = h_upload };
     static const httpd_uri_t u_del = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_fdelete };
+    static const httpd_uri_t u_mkdir = { .uri = "/api/files/mkdir", .method = HTTP_POST, .handler = h_mkdir };
     static const httpd_uri_t u_run = { .uri = "/api/elf/run", .method = HTTP_POST, .handler = h_elfrun };
     static const httpd_uri_t u_unload = { .uri = "/api/elf/unload", .method = HTTP_POST, .handler = h_elfunload };
     static const httpd_uri_t u_stop = { .uri = "/api/elf/stop", .method = HTTP_POST, .handler = h_elfstop };
@@ -216,12 +219,14 @@ void nnode_http_start(void)
     static const httpd_uri_t u_tz = { .uri = "/api/tz", .method = HTTP_GET, .handler = h_tz };
     static const httpd_uri_t u_tzp = { .uri = "/api/tz", .method = HTTP_POST, .handler = h_tz };
     static const httpd_uri_t u_backup = { .uri = "/api/backup", .method = HTTP_GET, .handler = h_backup };
+    static const httpd_uri_t u_cfgexport = { .uri = "/api/config/export", .method = HTTP_GET, .handler = h_cfgexport };
     static const httpd_uri_t u_restore = { .uri = "/api/backup/restore", .method = HTTP_POST, .handler = h_restore };
     static const httpd_uri_t u_reset = { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_reset };
     httpd_register_uri_handler(h, &u_files);
     httpd_register_uri_handler(h, &u_dl);
     httpd_register_uri_handler(h, &u_ul);
     httpd_register_uri_handler(h, &u_del);
+    httpd_register_uri_handler(h, &u_mkdir);
     httpd_register_uri_handler(h, &u_run);
     httpd_register_uri_handler(h, &u_unload);
     httpd_register_uri_handler(h, &u_stop);
@@ -236,6 +241,7 @@ void nnode_http_start(void)
     httpd_register_uri_handler(h, &u_tz);
     httpd_register_uri_handler(h, &u_tzp);
     httpd_register_uri_handler(h, &u_backup);
+    httpd_register_uri_handler(h, &u_cfgexport);
     httpd_register_uri_handler(h, &u_restore);
     httpd_register_uri_handler(h, &u_reset);
     ESP_LOGI(TAG, "httpd on :80");
@@ -1044,6 +1050,20 @@ static esp_err_t h_backup(httpd_req_t *r)
     return ESP_OK;
 }
 
+static esp_err_t h_cfgexport(httpd_req_t *r)
+{
+    bk_ctx_t cx;
+    cx.req = r;
+    cx.failed = 0;
+    httpd_resp_set_type(r, "text/plain");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    if (nnode_config_export(bk_emit, &cx) != 0 || cx.failed) {
+        return ESP_FAIL;
+    }
+    httpd_resp_send_chunk(r, NULL, 0);
+    return ESP_OK;
+}
+
 typedef struct {
     httpd_req_t *req;
     int left;
@@ -1176,6 +1196,7 @@ static esp_err_t h_reset(httpd_req_t *r)
     return ESP_OK;
 }
 
+/* Single-segment name (modules, kept strict). */
 static int query_name(httpd_req_t *r, char *name, size_t cap)
 {
     char q[128];
@@ -1187,15 +1208,38 @@ static int query_name(httpd_req_t *r, char *name, size_t cap)
     return nnode_file_valid(name) ? 0 : -1;
 }
 
+/* Multi-segment path inside /data (file manager). */
+static int query_path(httpd_req_t *r, char *name, size_t cap)
+{
+    char q[256];
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "name", name, cap) != ESP_OK) {
+        return -1;
+    }
+    qry_decode(name);
+    return nnode_path_valid(name) ? 0 : -1;
+}
+
 static esp_err_t h_files(httpd_req_t *r)
 {
     char *b = malloc(4096);
+    char q[256], dir[136];
     int n;
     esp_err_t e;
     if (!b) {
         return ESP_ERR_NO_MEM;
     }
-    n = nnode_files_json(b, 4096);
+    dir[0] = 0;
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "dir", dir, sizeof(dir)) == ESP_OK) {
+        qry_decode(dir);
+        if (!nnode_path_valid(dir)) {
+            free(b);
+            httpd_resp_set_status(r, "400 Bad Request");
+            return send_err(r, "name");
+        }
+    }
+    n = nnode_files_json(b, 4096, dir);
     httpd_resp_set_type(r, "application/json");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     e = httpd_resp_send(r, b, n < 0 ? 0 : n);
@@ -1205,16 +1249,37 @@ static esp_err_t h_files(httpd_req_t *r)
 
 static esp_err_t h_download(httpd_req_t *r)
 {
-    char name[72];
-    char path[80];
+    char name[140];
+    char path[160];
     FILE *f;
     long size;
     char *chunk;
-    if (query_name(r, name, sizeof(name)) != 0) {
+    struct stat st;
+    if (query_path(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
         return send_err(r, "name");
     }
     snprintf(path, sizeof(path), "/data/%s", name);
+    memset(&st, 0, sizeof(st));
+    if (stat(path, &st) != 0 || S_ISDIR(st.st_mode)) {
+        httpd_resp_set_status(r, "404 Not Found");
+        return send_err(r, "not_found");
+    }
+    {
+        /* Bare name for the save dialog; header-unsafe chars are
+         * replaced so a crafted name cannot split the header. */
+        const char *bn = strrchr(name, '/');
+        char disp[80], hdr[110];
+        size_t i, o = 0;
+        bn = bn ? bn + 1 : name;
+        for (i = 0; bn[i] && o + 1 < sizeof(disp); i++) {
+            char c = bn[i];
+            disp[o++] = (c == '"' || c == ';' || c == '\r' || c == '\n') ? '_' : c;
+        }
+        disp[o] = 0;
+        snprintf(hdr, sizeof(hdr), "attachment; filename=\"%s\"", disp);
+        httpd_resp_set_hdr(r, "Content-Disposition", hdr);
+    }
     f = fopen(path, "rb");
     if (!f) {
         httpd_resp_set_status(r, "404 Not Found");
@@ -1249,8 +1314,8 @@ static esp_err_t h_download(httpd_req_t *r)
 
 static esp_err_t h_upload(httpd_req_t *r)
 {
-    char name[72];
-    char path[80];
+    char name[140];
+    char path[160];
     FILE *f;
     long total = 0;
     char *chunk;
@@ -1259,7 +1324,7 @@ static esp_err_t h_upload(httpd_req_t *r)
         httpd_resp_set_status(r, "405 Method Not Allowed");
         return send_err(r, "method");
     }
-    if (query_name(r, name, sizeof(name)) != 0) {
+    if (query_path(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
         return send_err(r, "name");
     }
@@ -1304,13 +1369,13 @@ static esp_err_t h_upload(httpd_req_t *r)
 
 static esp_err_t h_fdelete(httpd_req_t *r)
 {
-    char name[72];
+    char name[140];
     int rc;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
         return send_err(r, "method");
     }
-    if (query_name(r, name, sizeof(name)) != 0) {
+    if (query_path(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
         return send_err(r, "name");
     }
@@ -1321,6 +1386,26 @@ static esp_err_t h_fdelete(httpd_req_t *r)
     }
     httpd_resp_set_status(r, "404 Not Found");
     return send_err(r, "not_found");
+}
+
+static esp_err_t h_mkdir(httpd_req_t *r)
+{
+    char name[140];
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    if (query_path(r, name, sizeof(name)) != 0) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    if (nnode_dir_create(name) == 0) {
+        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    }
+    httpd_resp_set_status(r, "500 Internal Error");
+    return send_err(r, "open");
 }
 
 static esp_err_t h_elfrun(httpd_req_t *r)
