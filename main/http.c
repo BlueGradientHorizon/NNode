@@ -149,122 +149,86 @@ static esp_err_t h_sys(httpd_req_t *r)
     return e;
 }
 
+/* URI handler budget: httpd preallocates max_uri_handlers slots and
+ * answers 404 to anything past it, so the table size is asserted at
+ * compile time below. Bump together with the table. */
+#define NNODE_HTTP_MAX_URIS 64
+
 void nnode_http_start(void)
 {
     httpd_handle_t h = NULL;
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
-    /* One slot per registered URI (see the u_* list below): a failed
-     * registration is silent and the endpoint 404s, so keep headroom. */
-    c.max_uri_handlers = 64;
+    size_t i;
+    c.max_uri_handlers = NNODE_HTTP_MAX_URIS;
     /* 8 KB: console logging (ESP_LOG over USB-JTAG) plus TLS-less chunked
      * IO no longer fit 6 KB once the backup handlers landed. */
     c.stack_size = 8192;
-    static const httpd_uri_t u_root = { .uri = "/", .method = HTTP_GET, .handler = h_root };
-    static const httpd_uri_t u_sum = { .uri = "/api/summary", .method = HTTP_GET, .handler = h_summary };
-    static const httpd_uri_t u_sys = { .uri = "/api/sys", .method = HTTP_GET, .handler = h_sys };
-    static const httpd_uri_t u_tasks = { .uri = "/api/tasks", .method = HTTP_GET, .handler = h_tasks };
-    static const httpd_uri_t u_time = { .uri = "/api/time", .method = HTTP_POST, .handler = h_time };
-    static const httpd_uri_t u_kill = { .uri = "/api/kill", .method = HTTP_POST, .handler = h_kill };
+    /* Single registration table: one row per endpoint, in serving order.
+     * New endpoints go here, never via ad-hoc register calls. */
+    static const httpd_uri_t kUris[] = {
+        { .uri = "/", .method = HTTP_GET, .handler = h_root },
+        { .uri = "/api/summary", .method = HTTP_GET, .handler = h_summary },
+        { .uri = "/api/sys", .method = HTTP_GET, .handler = h_sys },
+        { .uri = "/api/tasks", .method = HTTP_GET, .handler = h_tasks },
+        { .uri = "/api/time", .method = HTTP_POST, .handler = h_time },
+        { .uri = "/api/kill", .method = HTTP_POST, .handler = h_kill },
+        { .uri = "/api/net", .method = HTTP_GET, .handler = h_net },
+        { .uri = "/api/scan", .method = HTTP_GET, .handler = h_scan },
+        { .uri = "/api/ping", .method = HTTP_POST, .handler = h_ping },
+        { .uri = "/api/traceroute", .method = HTTP_POST, .handler = h_trace },
+        { .uri = "/api/nslookup", .method = HTTP_POST, .handler = h_nslookup },
+        { .uri = "/api/renew", .method = HTTP_POST, .handler = h_renew },
+        { .uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot },
+        { .uri = "/api/nets", .method = HTTP_GET, .handler = h_nets },
+        { .uri = "/api/ap", .method = HTTP_GET, .handler = h_ap },
+        { .uri = "/api/ap", .method = HTTP_POST, .handler = h_ap },
+        { .uri = "/api/sta/connect", .method = HTTP_POST, .handler = h_stacon },
+        { .uri = "/api/sta/disconnect", .method = HTTP_POST, .handler = h_stadisc },
+        { .uri = "/api/nets/forget", .method = HTTP_POST, .handler = h_forget },
+        { .uri = "/api/nets/update", .method = HTTP_POST, .handler = h_netsupdate },
+        { .uri = "/api/nets/add", .method = HTTP_POST, .handler = h_netsadd },
+        { .uri = "/api/ap/stations", .method = HTTP_GET, .handler = h_stations },
+        { .uri = "/api/ap/deauth", .method = HTTP_POST, .handler = h_deauth },
+        { .uri = "/api/files", .method = HTTP_GET, .handler = h_files },
+        { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_download },
+        { .uri = "/api/files/upload", .method = HTTP_POST, .handler = h_upload },
+        { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_fdelete },
+        { .uri = "/api/files/mkdir", .method = HTTP_POST, .handler = h_mkdir },
+        { .uri = "/api/elf/run", .method = HTTP_POST, .handler = h_elfrun },
+        { .uri = "/api/elf/unload", .method = HTTP_POST, .handler = h_elfunload },
+        { .uri = "/api/elf/stop", .method = HTTP_POST, .handler = h_elfstop },
+        { .uri = "/api/elf/kill", .method = HTTP_POST, .handler = h_elfkill },
+        { .uri = "/api/elf/instances", .method = HTTP_GET, .handler = h_elfinstances },
+        { .uri = "/api/elf/autostart", .method = HTTP_GET, .handler = h_autostart },
+        { .uri = "/api/elf/autostart/add", .method = HTTP_POST, .handler = h_autostart_add },
+        { .uri = "/api/elf/autostart/remove", .method = HTTP_POST, .handler = h_autostart_remove },
+        { .uri = "/api/elf/autostart/move", .method = HTTP_POST, .handler = h_autostart_move },
+        { .uri = "/api/graphs", .method = HTTP_GET, .handler = h_graphs },
+        { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
+        { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_logclear },
+        { .uri = "/api/ntp", .method = HTTP_GET, .handler = h_ntp },
+        { .uri = "/api/ntp", .method = HTTP_POST, .handler = h_ntp },
+        { .uri = "/api/ntp/sync", .method = HTTP_POST, .handler = h_ntpsync },
+        { .uri = "/api/hostname", .method = HTTP_GET, .handler = h_hostname },
+        { .uri = "/api/hostname", .method = HTTP_POST, .handler = h_hostname },
+        { .uri = "/api/tz", .method = HTTP_GET, .handler = h_tz },
+        { .uri = "/api/tz", .method = HTTP_POST, .handler = h_tz },
+        { .uri = "/api/backup", .method = HTTP_GET, .handler = h_backup },
+        { .uri = "/api/config/export", .method = HTTP_GET, .handler = h_cfgexport },
+        { .uri = "/api/backup/restore", .method = HTTP_POST, .handler = h_restore },
+        { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_reset },
+    };
+    _Static_assert(sizeof(kUris) / sizeof(kUris[0]) <= NNODE_HTTP_MAX_URIS,
+        "uri table exceeds max_uri_handlers: bump NNODE_HTTP_MAX_URIS");
     if (httpd_start(&h, &c) != ESP_OK) {
         ESP_LOGE(TAG, "httpd start failed");
         return;
     }
-    httpd_register_uri_handler(h, &u_root);
-    httpd_register_uri_handler(h, &u_sum);
-    httpd_register_uri_handler(h, &u_sys);
-    httpd_register_uri_handler(h, &u_tasks);
-    httpd_register_uri_handler(h, &u_time);
-    httpd_register_uri_handler(h, &u_kill);
-    static const httpd_uri_t u_net = { .uri = "/api/net", .method = HTTP_GET, .handler = h_net };
-    static const httpd_uri_t u_scan = { .uri = "/api/scan", .method = HTTP_GET, .handler = h_scan };
-    static const httpd_uri_t u_ping = { .uri = "/api/ping", .method = HTTP_POST, .handler = h_ping };
-    static const httpd_uri_t u_trace = { .uri = "/api/traceroute", .method = HTTP_POST, .handler = h_trace };
-    static const httpd_uri_t u_nslookup = { .uri = "/api/nslookup", .method = HTTP_POST, .handler = h_nslookup };
-    static const httpd_uri_t u_renew = { .uri = "/api/renew", .method = HTTP_POST, .handler = h_renew };
-    static const httpd_uri_t u_reboot = { .uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot };
-    httpd_register_uri_handler(h, &u_net);
-    httpd_register_uri_handler(h, &u_scan);
-    httpd_register_uri_handler(h, &u_ping);
-    httpd_register_uri_handler(h, &u_trace);
-    httpd_register_uri_handler(h, &u_nslookup);
-    httpd_register_uri_handler(h, &u_renew);
-    httpd_register_uri_handler(h, &u_reboot);
-    static const httpd_uri_t u_nets = { .uri = "/api/nets", .method = HTTP_GET, .handler = h_nets };
-    static const httpd_uri_t u_ap = { .uri = "/api/ap", .method = HTTP_GET, .handler = h_ap };
-    static const httpd_uri_t u_app = { .uri = "/api/ap", .method = HTTP_POST, .handler = h_ap };
-    static const httpd_uri_t u_stacon = { .uri = "/api/sta/connect", .method = HTTP_POST, .handler = h_stacon };
-    static const httpd_uri_t u_stadisc = { .uri = "/api/sta/disconnect", .method = HTTP_POST, .handler = h_stadisc };
-    static const httpd_uri_t u_forget = { .uri = "/api/nets/forget", .method = HTTP_POST, .handler = h_forget };
-    static const httpd_uri_t u_netsupdate = { .uri = "/api/nets/update", .method = HTTP_POST, .handler = h_netsupdate };
-    static const httpd_uri_t u_netsadd = { .uri = "/api/nets/add", .method = HTTP_POST, .handler = h_netsadd };
-    static const httpd_uri_t u_stations = { .uri = "/api/ap/stations", .method = HTTP_GET, .handler = h_stations };
-    static const httpd_uri_t u_deauth = { .uri = "/api/ap/deauth", .method = HTTP_POST, .handler = h_deauth };
-    httpd_register_uri_handler(h, &u_nets);
-    httpd_register_uri_handler(h, &u_ap);
-    httpd_register_uri_handler(h, &u_app);
-    httpd_register_uri_handler(h, &u_stacon);
-    httpd_register_uri_handler(h, &u_stadisc);
-    httpd_register_uri_handler(h, &u_forget);
-    httpd_register_uri_handler(h, &u_netsupdate);
-    httpd_register_uri_handler(h, &u_netsadd);
-    httpd_register_uri_handler(h, &u_stations);
-    httpd_register_uri_handler(h, &u_deauth);
-    static const httpd_uri_t u_files = { .uri = "/api/files", .method = HTTP_GET, .handler = h_files };
-    static const httpd_uri_t u_dl = { .uri = "/api/files/download", .method = HTTP_GET, .handler = h_download };
-    static const httpd_uri_t u_ul = { .uri = "/api/files/upload", .method = HTTP_POST, .handler = h_upload };
-    static const httpd_uri_t u_del = { .uri = "/api/files/delete", .method = HTTP_POST, .handler = h_fdelete };
-    static const httpd_uri_t u_mkdir = { .uri = "/api/files/mkdir", .method = HTTP_POST, .handler = h_mkdir };
-    static const httpd_uri_t u_run = { .uri = "/api/elf/run", .method = HTTP_POST, .handler = h_elfrun };
-    static const httpd_uri_t u_unload = { .uri = "/api/elf/unload", .method = HTTP_POST, .handler = h_elfunload };
-    static const httpd_uri_t u_stop = { .uri = "/api/elf/stop", .method = HTTP_POST, .handler = h_elfstop };
-    static const httpd_uri_t u_elfkill = { .uri = "/api/elf/kill", .method = HTTP_POST, .handler = h_elfkill };
-    static const httpd_uri_t u_instances = { .uri = "/api/elf/instances", .method = HTTP_GET, .handler = h_elfinstances };
-    static const httpd_uri_t u_autostart = { .uri = "/api/elf/autostart", .method = HTTP_GET, .handler = h_autostart };
-    static const httpd_uri_t u_asadd = { .uri = "/api/elf/autostart/add", .method = HTTP_POST, .handler = h_autostart_add };
-    static const httpd_uri_t u_asrm = { .uri = "/api/elf/autostart/remove", .method = HTTP_POST, .handler = h_autostart_remove };
-    static const httpd_uri_t u_asmv = { .uri = "/api/elf/autostart/move", .method = HTTP_POST, .handler = h_autostart_move };
-    static const httpd_uri_t u_graphs = { .uri = "/api/graphs", .method = HTTP_GET, .handler = h_graphs };
-    static const httpd_uri_t u_log = { .uri = "/api/log", .method = HTTP_GET, .handler = h_log };
-    static const httpd_uri_t u_logclear = { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_logclear };
-    static const httpd_uri_t u_ntp = { .uri = "/api/ntp", .method = HTTP_GET, .handler = h_ntp };
-    static const httpd_uri_t u_ntpp = { .uri = "/api/ntp", .method = HTTP_POST, .handler = h_ntp };
-    static const httpd_uri_t u_ntpsync = { .uri = "/api/ntp/sync", .method = HTTP_POST, .handler = h_ntpsync };
-    static const httpd_uri_t u_hostname = { .uri = "/api/hostname", .method = HTTP_GET, .handler = h_hostname };
-    static const httpd_uri_t u_hostnamep = { .uri = "/api/hostname", .method = HTTP_POST, .handler = h_hostname };
-    static const httpd_uri_t u_tz = { .uri = "/api/tz", .method = HTTP_GET, .handler = h_tz };
-    static const httpd_uri_t u_tzp = { .uri = "/api/tz", .method = HTTP_POST, .handler = h_tz };
-    static const httpd_uri_t u_backup = { .uri = "/api/backup", .method = HTTP_GET, .handler = h_backup };
-    static const httpd_uri_t u_cfgexport = { .uri = "/api/config/export", .method = HTTP_GET, .handler = h_cfgexport };
-    static const httpd_uri_t u_restore = { .uri = "/api/backup/restore", .method = HTTP_POST, .handler = h_restore };
-    static const httpd_uri_t u_reset = { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_reset };
-    httpd_register_uri_handler(h, &u_files);
-    httpd_register_uri_handler(h, &u_dl);
-    httpd_register_uri_handler(h, &u_ul);
-    httpd_register_uri_handler(h, &u_del);
-    httpd_register_uri_handler(h, &u_mkdir);
-    httpd_register_uri_handler(h, &u_run);
-    httpd_register_uri_handler(h, &u_unload);
-    httpd_register_uri_handler(h, &u_stop);
-    httpd_register_uri_handler(h, &u_elfkill);
-    httpd_register_uri_handler(h, &u_instances);
-    httpd_register_uri_handler(h, &u_autostart);
-    httpd_register_uri_handler(h, &u_asadd);
-    httpd_register_uri_handler(h, &u_asrm);
-    httpd_register_uri_handler(h, &u_asmv);
-    httpd_register_uri_handler(h, &u_graphs);
-    httpd_register_uri_handler(h, &u_log);
-    httpd_register_uri_handler(h, &u_logclear);
-    httpd_register_uri_handler(h, &u_ntp);
-    httpd_register_uri_handler(h, &u_ntpp);
-    httpd_register_uri_handler(h, &u_ntpsync);
-    httpd_register_uri_handler(h, &u_hostname);
-    httpd_register_uri_handler(h, &u_hostnamep);
-    httpd_register_uri_handler(h, &u_tz);
-    httpd_register_uri_handler(h, &u_tzp);
-    httpd_register_uri_handler(h, &u_backup);
-    httpd_register_uri_handler(h, &u_cfgexport);
-    httpd_register_uri_handler(h, &u_restore);
-    httpd_register_uri_handler(h, &u_reset);
+    for (i = 0; i < sizeof(kUris) / sizeof(kUris[0]); i++) {
+        if (httpd_register_uri_handler(h, &kUris[i]) != ESP_OK) {
+            ESP_LOGE(TAG, "uri register failed: %s", kUris[i].uri);
+        }
+    }
     ESP_LOGI(TAG, "httpd on :80");
 }
 
