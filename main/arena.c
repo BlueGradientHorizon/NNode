@@ -489,8 +489,12 @@ int nnode_pthread_create(pthread_t *t, const pthread_attr_t *attr,
 void nnode_vTaskDelete(TaskHandle_t h)
 {
     TaskHandle_t t = h ? h : xTaskGetCurrentTaskHandle();
-    vTaskDelete(h);
+    /* Forget first: for self-delete vTaskDelete never returns, so a
+     * forget after it would never run and the handle would go stale.
+     * A stale handle later looks live to the stop grace loop and the
+     * kill below would delete a freed TCB (Store access fault). */
     nnode_arena_forget_task(t);
+    vTaskDelete(h);
 }
 
 /* Kill every task attributed to the slot (by handle, no name whitelist:
@@ -512,8 +516,22 @@ int nnode_arena_kill_tasks(int slot)
     }
     taskEXIT_CRITICAL(&s_mu);
     for (i = 0; i < n; i++) {
-        vTaskDelete(victims[i]);
-        nnode_arena_forget_task(victims[i]);
+        int j, still = 0;
+        /* Revalidate under lock: the victim may have exited on its own
+         * (and unmapped itself above) between collect and kill. */
+        taskENTER_CRITICAL(&s_mu);
+        for (j = 0; j < NNODE_ARENA_MAX_TASKS; j++) {
+            if (s_tasks[j].h == victims[i] && s_tasks[j].slot == slot) {
+                s_tasks[j].h = NULL;
+                s_tasks[j].slot = -1;
+                still = 1;
+                break;
+            }
+        }
+        taskEXIT_CRITICAL(&s_mu);
+        if (still) {
+            vTaskDelete(victims[i]);
+        }
     }
     if (n) {
         ESP_LOGI(TAG, "slot %d: killed %d tasks", slot, n);

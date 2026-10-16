@@ -127,7 +127,7 @@
       get("/api/sys", renderSys);
     };
     if (k === "programs/modules") return function () {
-      get("/api/files?dir=programs", renderModules);
+      loadModules();
     };
     if (k === "network/interfaces") return function () {
       get("/api/net", renderNet); get("/api/ap/stations", renderStations);
@@ -1275,16 +1275,18 @@
       tb.appendChild(tr);
     });
   }
-  function renderModules(arr) {
+  function renderModules(arr, inst) {
     var tb = document.getElementById("modules-body");
     tb.innerHTML = "";
     arr.forEach(function (x) {
       if (!x.is_elf) return;
       var tr = document.createElement("tr");
-      tr.innerHTML = "<td></td><td></td><td></td><td></td>";
+      tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
       tr.children[0].textContent = x.name;
       tr.children[1].textContent = fmtKB(x.size);
-      tr.children[2].textContent = x.loaded ? t("loaded") : "-";
+      tr.children[2].textContent = "-";
+      tr.children[3].textContent = "-";
+      /* File rows only start new instances; live ones hang below. */
       var br = mkbtn(t("run"), "btn-primary", (function (s) { return function () {
         fetch("/api/elf/run?name=" + encodeURIComponent(s), { method: "POST" })
           .then(function (r) { return r.json(); }).then(function (j) {
@@ -1295,19 +1297,48 @@
           }).catch(function () {
             toastErr();
           });
-      }; })(x.name), x.loaded);
-      var bu = mkbtn(t("stop"), "btn-danger", (function (s) { return function () {
-        fetch("/api/elf/stop?name=" + encodeURIComponent(s), { method: "POST" })
-          .then(function () {
-            loadFiles();
-            loadModules();
-            get("/api/tasks", renderTasks);
-          });
-      }; })(x.name), !x.loaded);
-      tr.children[3].appendChild(br);
-      tr.children[3].appendChild(document.createTextNode(" "));
-      tr.children[3].appendChild(bu);
+      }; })(x.name), false);
+      tr.children[4].appendChild(br);
       tb.appendChild(tr);
+      (inst || []).forEach(function (o) {
+        if (o.name !== x.name) return;
+        var ir = document.createElement("tr");
+        ir.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+        ir.children[0].textContent = "-";
+        ir.children[1].textContent = "-";
+        ir.children[2].textContent = o.id;
+        ir.children[3].textContent = o.state === "exited" ? t("st_exited") : t("st_running");
+        var bs = mkbtn(t("stop"), "", (function (id) { return function () {
+          fetch("/api/elf/stop?id=" + id, { method: "POST" })
+            .then(function (r) { return r.json(); }).then(function (j) {
+              if (j.ok) toast("toast_stopped", true);
+              else toastErr(j);
+              loadFiles();
+              loadModules();
+              get("/api/tasks", renderTasks);
+            }).catch(function () {
+              toastErr();
+            });
+        }; })(o.id), false);
+        var bk = mkbtn(t("kill"), "btn-danger", (function (o) { return function () {
+          confirmModal(t("kill_confirm").replace("{id}", o.id).replace("{s}", o.name), function () {
+            fetch("/api/elf/kill?id=" + o.id, { method: "POST" })
+              .then(function (r) { return r.json(); }).then(function (j) {
+                if (j.ok) toast("toast_killed", true);
+                else toastErr(j);
+                loadFiles();
+                loadModules();
+                get("/api/tasks", renderTasks);
+              }).catch(function () {
+                toastErr();
+              });
+          }, "kill");
+        }; })(o), false);
+        ir.children[4].appendChild(bs);
+        ir.children[4].appendChild(document.createTextNode(" "));
+        ir.children[4].appendChild(bk);
+        tb.appendChild(ir);
+      });
     });
   }
   var curDir = "";
@@ -1318,7 +1349,11 @@
     get(filesUrl(curDir), function (arr) { renderAll(arr, curDir); });
   }
   function loadModules() {
-    get("/api/files?dir=programs", renderModules);
+    get("/api/files?dir=programs", function (arr) {
+      get("/api/elf/instances", function (o) {
+        renderModules(arr, (o && o.instances) || []);
+      });
+    });
   }
   function renderAll(arr, dir) {
     renderFiles(arr, dir || "");

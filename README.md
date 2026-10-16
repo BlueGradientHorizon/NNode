@@ -22,7 +22,8 @@ assets and fits easily next to your application.
 - Diagnostics with live output: ping, traceroute and nslookup
 - File manager for the LittleFS `/data` partition: subdirectories,
   upload, download, delete
-- ELF program loader: run, stop and unload modules stored in `/data/programs`
+- ELF program loader: run several copies of modules stored in
+  `/data/programs`, stop (SIGTERM) or kill (SIGKILL) each instance
 - One-file backup and restore (CBOR) plus factory reset
 - Hostname, timezone, NTP/SNTP, 12/24-hour clock and RU/EN language settings
 - Hash routing (`#/section/page`), served over plain HTTP
@@ -101,7 +102,8 @@ The firmware runs `esp_http_server` with a small JSON REST API:
   `POST /api/nslookup` (chunked live output)
 - files and programs: `GET /api/files`, `GET /api/files/download`,
   `POST /api/files/upload`, `POST /api/files/delete`,
-  `POST /api/elf/run`, `POST /api/elf/stop`, `POST /api/elf/unload`
+   `POST /api/elf/run`, `POST /api/elf/stop`, `POST /api/elf/kill`,
+   `POST /api/elf/unload`, `GET /api/elf/instances`
 - backup: `GET /api/backup`, `POST /api/backup/restore`,
   `POST /api/factory-reset`, `GET /api/config/export`
 
@@ -132,6 +134,36 @@ boot; later every change rewrites its file immediately.
 `GET /api/config/export` returns all packages concatenated, and the
 CBOR backup embeds each package text plus the plain `/data` files.
 
+### ELF modules
+
+Modules in `/data/programs` are relocatable `.elf` files built from
+`examples/<app>` via `examples/build.py <target> build <app>`. Every
+module must define `nnode_main` (like `app_main`: spawn tasks, return
+immediately, never block) and `nnode_term` (SIGTERM hook: short,
+non-blocking, save state). `sdk/nnode_entry.c` provides the ELF entry
+point and registers both; a module without them fails its link, and the
+board rejects legacy images with `bad_abi`. Contract and imports live
+in `sdk/nnode_sdk.h`, the reference is `examples/blink` (GPIO8 LED,
+active-low on the C3 Super Mini, worker polls `nnode_stop_requested()`).
+
+One file may run several times: each `POST /api/elf/run` loads a fresh
+copy into one of 8 slots and returns its instance `id`.
+`POST /api/elf/stop` (by `id` or legacy `name`) raises the per-instance
+stop flag, calls `nnode_term`, waits up to 2 s for tasks to exit on
+their own, then kills leftovers and frees the slot.
+`POST /api/elf/kill` skips the hook and the wait. `GET /api/elf/instances`
+lists live instances; the panel shows one row per file (Run only) plus
+one row per instance (`-`, id, live state, Stop/Kill with a kill
+confirmation).
+
+Besides libc, modules may call the `gpio_*`/FreeRTOS symbols from
+`main/modsym.c` plus file ops (`fopen`, `fclose`, `fread`, `fwrite`,
+`fprintf`, `fseek`, `ftell`, `rename`, `unlink`) on LittleFS `/data`.
+`malloc`/`free` and tasks are accounted per instance (see `main/arena.c`)
+and reclaimed on stop/kill; anything else (open files, queues) must be
+released by the module itself. Module `printf` goes to UART only, it
+never lands in `/api/log` (that buffer captures `esp_log` output).
+
 ### Limits
 
 - At most 8 saved WiFi networks; SSID is 1-32 chars, passphrase is 0-63
@@ -139,7 +171,8 @@ CBOR backup embeds each package text plus the plain `/data` files.
    stored in `/data/config` as plain text.
 - Path segments in `/data` may not be `.` or contain `/` or `..` and are
    capped at 64 chars (8 levels, 128 chars total); only `.elf` files in
-   `/data/programs` can be executed, and up to 8 modules stay loaded at once.
+   `/data/programs` can be executed, and up to 8 instances stay loaded
+   at once (one file may run several times, each copy takes a slot).
 - Only tasks named `nnode_*` can be stopped from the Processes page.
 
 ### Flash layout (4 MB, offsets are fixed - never move `storage`)
@@ -160,6 +193,8 @@ NNode/
                   generated preview in src_web/inlined/ (not committed)
   tools/          build helpers: web_inline.py (minify, inline, gzip),
                   gen_modsym.py (ELF module symbol table)
+  sdk/            module contract: nnode_sdk.h (imports + nnode_main/nnode_term),
+                  nnode_entry.c (entry shim linked into each module)
    main/           firmware: REST API, WiFi, file-backed settings, LittleFS, ELF runner
   examples/       loadable ELF module sources (blink for esp32c3);
                   built via examples/build.py <target> <action> <app> into

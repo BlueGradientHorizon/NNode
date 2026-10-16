@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-"""Build NNode/main/modsym.c from the legacy elf_loader symbol table.
+"""Build NNode/main/modsym.c from the curated symbol baseline.
 
-Reads extern decls + ESP_ELFSYM_EXPORT entries from
-NNode/_components/elf_loader/src/esp_all_symbol.c and emits a
-self-contained resolver table for the NNode app (approach B:
-custom elf_set_symbol_resolver with fallback to elf_find_sym_default).
-No regex-free requirement here, plain build helper.
+Inputs (both must exist, no legacy paths):
+- managed_components/elf_loader/src/esp_elf_symbol.c: upstream loader
+  defaults (ESP_ELFSYM_EXPORT in g_esp_libc/espidf tables). Our table
+  must stay disjoint from it: names already covered upstream need no
+  entry here (overlap is a warning, the entry still wins - same address).
+- main/modsym.c (current file): the baseline name list. The legacy
+  vendor table this list was derived from is gone, so the generated file
+  itself is the source of truth for the gpio/rtc/dedic/freertos groups.
+
+On top of the baseline the script appends EXTRA groups (symbols the
+baseline lacks but the firmware must export) and emits the resolver tail.
+Resolver chain (see modsym.c): arena wrappers first, then the lifecycle
+contract (nnode_register/nnode_stop_requested via nnode_lifecycle_resolve
+in main/files.c), then this table, then the loader defaults.
+
+Do NOT hand-edit modsym.c: rerun this script instead.
 """
 import os
 import re
@@ -13,39 +24,38 @@ import sys
 
 ROOT = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".."))
-SRC = os.path.join(ROOT, "_components", "elf_loader", "src", "esp_all_symbol.c")
+LOADER_SRC = os.path.join(ROOT, "managed_components", "elf_loader",
+                          "src", "esp_elf_symbol.c")
 OUT = os.path.join(ROOT, "main", "modsym.c")
 
-if not os.path.isfile(SRC):
-    print("legacy table not found: %s" % SRC, file=sys.stderr)
-    print("(kept outside the repo while the fork migration is in progress)",
-          file=sys.stderr)
+if not os.path.isfile(LOADER_SRC):
+    print("loader defaults not found: %s" % LOADER_SRC, file=sys.stderr)
     sys.exit(1)
-with open(SRC, "r", encoding="utf-8") as f:
-    text = f.read()
-
-externs = re.findall(r"^extern int (\w+);", text, flags=re.M)
-exports = re.findall(r"ESP_ELFSYM_EXPORT\((\w+)\)", text)
-
-print("externs=%d exports=%d" % (len(externs), len(exports)))
-if set(externs) != set(exports):
-    print("MISMATCH extern vs export sets:",
-          set(externs) ^ set(exports), file=sys.stderr)
+if not os.path.isfile(OUT):
+    print("baseline not found: %s" % OUT, file=sys.stderr)
     sys.exit(1)
+with open(LOADER_SRC, "r", encoding="utf-8") as f:
+    loader_text = f.read()
+with open(OUT, "r", encoding="utf-8") as f:
+    base_text = f.read()
 
-seen = set()
-names = []
-for n in exports:
-    if n not in seen:
-        seen.add(n)
-        names.append(n)
-print("unique=%d" % len(names))
+upstream = set(re.findall(r"ESP_ELFSYM_EXPORT\((\w+)\)", loader_text))
+baseline = re.findall(r'^\s*\{\s*"(\w+)", \(uintptr_t\)&\1 \},',
+                      base_text, flags=re.M)
+print("upstream=%d baseline=%d" % (len(upstream), len(baseline)))
+if len(baseline) != len(set(baseline)):
+    print("MISMATCH duplicate names in baseline", file=sys.stderr)
+    sys.exit(1)
 
 # Verified against nm over all C3 archives (13737 unique symbols) and
 # libfreertos.a (229 defined symbols). Families below, in table order.
 
+LIBC = {"fopen", "fclose", "fread", "fseek", "ftell", "rename", "unlink"}
+
 
 def family(n):
+    if n in LIBC:
+        return "libc"
     if n.startswith("gpio_"):
         return "gpio"
     if n.startswith("rtc_gpio_"):
@@ -55,16 +65,17 @@ def family(n):
     return "freertos"
 
 
-GROUPS = ("gpio", "rtc", "dedic", "freertos")
+GROUPS = ("gpio", "rtc", "dedic", "freertos", "libc")
 GROUP_TITLE = {
     "gpio": "gpio_ driver group",
     "rtc": "rtc_gpio_ group",
     "dedic": "dedic_gpio_ (dedicated GPIO) group",
     "freertos": "FreeRTOS kernel group",
+    "libc": "libc file ops (missing from the loader defaults)",
 }
 # Deliberately omitted symbols per family, with reasons.
-# The "v6.0-removed" set keeps regeneration from the old (v5.x) vendor
-# table link-clean on ESP-IDF v6: those symbols no longer exist there.
+# The "v6.0-removed" set keeps the old (v5.x) vendor table link-clean
+# on ESP-IDF v6: those symbols no longer exist there.
 OMITTED = {
     "gpio": ([
         "gpio_hal_intr_disable",
@@ -72,10 +83,6 @@ OMITTED = {
         "gpio_hal_iomux_in",
         "gpio_hal_iomux_out",
         "gpio_hal_isolate_in_sleep",
-        "gpio_deep_sleep_wakeup_disable",  # v6.0-removed, use gpio_wakeup_*_on_hp_periph_powerdown_sleep
-        "gpio_deep_sleep_wakeup_enable",  # v6.0-removed, use gpio_wakeup_*_on_hp_periph_powerdown_sleep
-        "gpio_iomux_in",  # v6.0-removed, use gpio_iomux_input
-        "gpio_iomux_out",  # v6.0-removed, use gpio_iomux_output
     ], "HAL internals, not part of the driver API normal modules use"),
     "rtc": ([], None),
     "dedic": ([], None),
@@ -83,23 +90,32 @@ OMITTED = {
         "FreeRTOS_openocd_params",
         "uxTopUsedPriority",
         "vApplicationStackOverflowHook",
-        "ulTaskNotifyTake",  # v6.0-removed compat fn (now a macro, no symbol)
-        "vTaskDelayUntil",  # v6.0-removed compat fn (use xTaskDelayUntil)
-        "xQueueGenericReceive",  # v6.0-removed compat fn (use xQueueReceive/Peek)
-        "xTaskNotifyWait",  # v6.0-removed compat fn (now a macro, no symbol)
     ], "debugger-only struct, kernel-internal counter and an "
         "application-provided hook (must be defined by the app, "
         "never imported from the firmware) respectively"),
+    "libc": ([
+        "fprintf",
+        "fwrite",
+        "printf",
+    ], "already exported by the loader defaults, no entry needed"),
 }
 
-ordered = []
-for g in GROUPS:
-    ordered.extend(n for n in names if family(n) == g)
-assert len(ordered) == len(names), "family() must cover every symbol"
-names = ordered
-
-# Symbols that the old vendor table lacks but the firmware must export
-# (ESP-IDF v6.0 replacements for the removed gpio deep-sleep wakeup APIs).
+# Extra comment lines kept under a group footer (history worth keeping).
+NOTE = {
+    "gpio": [
+        "ESP-IDF v6.0: gpio_deep_sleep_wakeup_enable/disable were removed,",
+        "replaced by gpio_wakeup_enable/disable_on_hp_periph_powerdown_sleep;",
+        "gpio_iomux_in/out were removed, use gpio_iomux_input/output.",
+    ],
+    "freertos": [
+        "Dropped in ESP-IDF v6.0 (were already macros/removed upstream, no",
+        "linkable symbol left): ulTaskNotifyTake, vTaskDelayUntil,",
+        "xQueueGenericReceive, xTaskNotifyWait. Use ulTaskNotifyTake/xTaskDelayUntil",
+        "macros and xQueueReceive/xQueuePeek/xQueueSemaphoreTake instead.",
+    ],
+}
+# Symbols that the baseline lacks but the firmware must export
+# (ESP-IDF v6.0 replacements plus libc file ops missing upstream).
 EXTRA = {
     "gpio": [
         "gpio_wakeup_disable_on_hp_periph_powerdown_sleep",
@@ -108,19 +124,32 @@ EXTRA = {
     "rtc": [],
     "dedic": [],
     "freertos": [],
+    "libc": sorted(LIBC),
 }
 
-OMIT = set(n for v in OMITTED.values() for n in v[0])
-names = [n for n in names if n not in OMIT]
+names = [n for n in baseline if family(n) in GROUPS]
+assert len(names) == len(baseline), "family() must cover every symbol"
 for g in GROUPS:
     names.extend(n for n in EXTRA[g] if n not in names)
+
+overlap = [n for n in names if n in upstream]
+if overlap:
+    print("WARNING already upstream (redundant entries): %s" % overlap)
+
+ordered = []
+for g in GROUPS:
+    ordered.extend(n for n in names if family(n) == g)
+assert len(ordered) == len(names), "family() must cover every symbol"
+names = ordered
+print("unique=%d" % len(names))
 
 lines = []
 lines.append("/* NNode ELF module symbol table (custom resolver for elf_loader).")
 lines.append(" *")
-lines.append(" * Generated from the legacy vendor table by tools/gen_modsym.py.")
-lines.append(" * These are the extra firmware symbols (GPIO driver + FreeRTOS)")
-lines.append(" * that ELF modules may call, beyond the loader defaults.")
+lines.append(" * Generated by tools/gen_modsym.py - do not hand-edit.")
+lines.append(" * These are the extra firmware symbols (GPIO driver, FreeRTOS,")
+lines.append(" * libc file ops) that ELF modules may call, beyond the loader")
+lines.append(" * defaults.")
 lines.append(" *")
 lines.append(" * The `extern int` declarations only take addresses (same trick")
 lines.append(" * as upstream esp_all_symbol.c) and pin the functions against")
@@ -158,6 +187,8 @@ for g in GROUPS:
     omitted, reason = OMITTED[g]
     if omitted:
         lines.append("    /* --- end of %s (%d exported)." % (GROUP_TITLE[g], len(group)))
+        for note in NOTE.get(g, []):
+            lines.append("     * %s" % note)
         lines.append("     * Deliberately not exported (%s):" % reason)
         lines.append("     * %s. */" % ", ".join(omitted))
     else:
@@ -186,13 +217,19 @@ lines.append("typedef uintptr_t (*nnode_symbol_resolver_fn)(const char *sym_name
 lines.append("extern void elf_set_symbol_resolver(nnode_symbol_resolver_fn resolver);")
 lines.append("extern uintptr_t elf_find_sym_default(const char *sym_name);")
 lines.append("extern uintptr_t nnode_arena_resolve(const char *sym_name);")
+lines.append("extern uintptr_t nnode_lifecycle_resolve(const char *sym_name);")
 lines.append("")
 lines.append("/* Single resolver chain: arena wrappers first (they shadow the same-named")
-lines.append(" * raw firmware symbols in the table below), then the modsym table, then")
+lines.append(" * raw firmware symbols in the table below), then the lifecycle contract")
+lines.append(" * (nnode_register/nnode_stop_requested), then the modsym table, then")
 lines.append(" * the loader defaults. */")
 lines.append("static uintptr_t nnode_resolver(const char *name)")
 lines.append("{")
 lines.append("    uintptr_t addr = nnode_arena_resolve(name);")
+lines.append("    if (addr) {")
+lines.append("        return addr;")
+lines.append("    }")
+lines.append("    addr = nnode_lifecycle_resolve(name);")
 lines.append("    if (addr) {")
 lines.append("        return addr;")
 lines.append("    }")

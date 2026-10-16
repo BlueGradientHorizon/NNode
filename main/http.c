@@ -77,6 +77,8 @@ static esp_err_t h_mkdir(httpd_req_t *r);
 static esp_err_t h_elfrun(httpd_req_t *r);
 static esp_err_t h_elfunload(httpd_req_t *r);
 static esp_err_t h_elfstop(httpd_req_t *r);
+static esp_err_t h_elfkill(httpd_req_t *r);
+static esp_err_t h_elfinstances(httpd_req_t *r);
 static esp_err_t h_graphs(httpd_req_t *r);
 static esp_err_t h_log(httpd_req_t *r);
 static esp_err_t h_logclear(httpd_req_t *r);
@@ -208,6 +210,8 @@ void nnode_http_start(void)
     static const httpd_uri_t u_run = { .uri = "/api/elf/run", .method = HTTP_POST, .handler = h_elfrun };
     static const httpd_uri_t u_unload = { .uri = "/api/elf/unload", .method = HTTP_POST, .handler = h_elfunload };
     static const httpd_uri_t u_stop = { .uri = "/api/elf/stop", .method = HTTP_POST, .handler = h_elfstop };
+    static const httpd_uri_t u_elfkill = { .uri = "/api/elf/kill", .method = HTTP_POST, .handler = h_elfkill };
+    static const httpd_uri_t u_instances = { .uri = "/api/elf/instances", .method = HTTP_GET, .handler = h_elfinstances };
     static const httpd_uri_t u_graphs = { .uri = "/api/graphs", .method = HTTP_GET, .handler = h_graphs };
     static const httpd_uri_t u_log = { .uri = "/api/log", .method = HTTP_GET, .handler = h_log };
     static const httpd_uri_t u_logclear = { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_logclear };
@@ -230,6 +234,8 @@ void nnode_http_start(void)
     httpd_register_uri_handler(h, &u_run);
     httpd_register_uri_handler(h, &u_unload);
     httpd_register_uri_handler(h, &u_stop);
+    httpd_register_uri_handler(h, &u_elfkill);
+    httpd_register_uri_handler(h, &u_instances);
     httpd_register_uri_handler(h, &u_graphs);
     httpd_register_uri_handler(h, &u_log);
     httpd_register_uri_handler(h, &u_logclear);
@@ -1208,6 +1214,17 @@ static int query_name(httpd_req_t *r, char *name, size_t cap)
     return nnode_file_valid(name) ? 0 : -1;
 }
 
+/* Optional instance id: >= 0 when present and numeric, else -1. */
+static int query_id(httpd_req_t *r)
+{
+    char q[128], v[16];
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "id", v, sizeof(v)) != ESP_OK) {
+        return -1;
+    }
+    return atoi(v);
+}
+
 /* Multi-segment path inside /data (file manager). */
 static int query_path(httpd_req_t *r, char *name, size_t cap)
 {
@@ -1412,6 +1429,8 @@ static esp_err_t h_elfrun(httpd_req_t *r)
 {
     char name[72];
     char err[96];
+    char ok[64];
+    int id = 0;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
         return send_err(r, "method");
@@ -1421,8 +1440,9 @@ static esp_err_t h_elfrun(httpd_req_t *r)
         return send_err(r, "name");
     }
     httpd_resp_set_type(r, "application/json");
-    if (nnode_elf_run(name, err, sizeof(err)) == 0) {
-        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    if (nnode_elf_run(name, &id, err, sizeof(err)) == 0) {
+        snprintf(ok, sizeof(ok), "{\"ok\":true,\"id\":%d}", id);
+        return httpd_resp_sendstr(r, ok);
     }
     httpd_resp_set_status(r, "500 Internal Error");
     return send_err(r, err);
@@ -1456,20 +1476,58 @@ static esp_err_t h_elfunload(httpd_req_t *r)
 static esp_err_t h_elfstop(httpd_req_t *r)
 {
     char name[72];
-    int rc;
+    int rc, id;
     if (r->method != HTTP_POST) {
         httpd_resp_set_status(r, "405 Method Not Allowed");
         return send_err(r, "method");
     }
-    if (query_name(r, name, sizeof(name)) != 0) {
+    id = query_id(r);
+    if (id < 0 && query_name(r, name, sizeof(name)) != 0) {
         httpd_resp_set_status(r, "400 Bad Request");
         return send_err(r, "name");
     }
-    rc = nnode_elf_stop(name);
+    rc = nnode_elf_stop(id, id < 0 ? name : NULL);
     httpd_resp_set_type(r, "application/json");
     if (rc == 0) {
         return httpd_resp_sendstr(r, "{\"ok\":true}");
     }
     httpd_resp_set_status(r, "404 Not Found");
     return send_err(r, "not_loaded");
+}
+
+static esp_err_t h_elfkill(httpd_req_t *r)
+{
+    char name[72];
+    int rc, id;
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    id = query_id(r);
+    if (id < 0 && query_name(r, name, sizeof(name)) != 0) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    rc = nnode_elf_kill(id, id < 0 ? name : NULL);
+    httpd_resp_set_type(r, "application/json");
+    if (rc == 0) {
+        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    }
+    httpd_resp_set_status(r, "404 Not Found");
+    return send_err(r, "not_loaded");
+}
+
+static esp_err_t h_elfinstances(httpd_req_t *r)
+{
+    char *b = malloc(1024);
+    int n;
+    if (!b) {
+        return ESP_ERR_NO_MEM;
+    }
+    n = nnode_elf_instances_json(b, 1024);
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    httpd_resp_send(r, b, n < 0 ? 0 : n);
+    free(b);
+    return ESP_OK;
 }

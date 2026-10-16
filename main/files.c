@@ -240,13 +240,96 @@ int nnode_file_delete(const char *name)
 #endif
 typedef struct {
     int used;
+    int id; /* instance id, monotonic, never reused */
     char name[65];
     elf_file_t file;
     esp_elf_t elf;
     size_t text_size; /* PT_LOAD with PF_X: IRAM image */
     size_t data_size; /* other PT_LOADs: DRAM image */
+    int (*main_fn)(int argc, char *argv[]);
+    void (*term_fn)(void);
+    int stop_flag; /* set by stop, polled via nnode_stop_requested */
 } loaded_mod_t;
 static loaded_mod_t s_mods[NNODE_MAX_LOADED];
+static int s_next_id = 1;
+
+/* Grace for tasks to exit on their own after SIGTERM before SIGKILL. */
+#define NNODE_STOP_GRACE_MS 2000
+
+/* Locate a slot by instance id, else the first name match. */
+static int find_slot(int id, const char *name)
+{
+    int i;
+    if (id >= 0) {
+        for (i = 0; i < NNODE_MAX_LOADED; i++) {
+            if (s_mods[i].used && s_mods[i].id == id) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    if (!name) {
+        return -1;
+    }
+    for (i = 0; i < NNODE_MAX_LOADED; i++) {
+        if (s_mods[i].used && strcmp(s_mods[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Release a slot: free arena, unmap the image. Callers kill tasks first. */
+static void drop_slot(int i)
+{
+    ESP_LOGI(TAG, "dropped %s#%d", s_mods[i].name, s_mods[i].id);
+    nnode_arena_free_slot(i);
+    esp_elf_deinit(&s_mods[i].elf);
+    esp_elf_close(&s_mods[i].file);
+    memset(&s_mods[i], 0, sizeof(s_mods[i]));
+}
+
+/* Lifecycle contract: the entry shim (sdk/nnode_entry.c) calls this from
+ * app_main while the slot's arena is active, so the owner resolves to the
+ * slot being started. No reverse symbol lookup is needed. */
+void nnode_register(void *main_fn, void *term_fn)
+{
+    int slot = nnode_arena_owner_current();
+    if (slot < 0 || slot >= NNODE_MAX_LOADED) {
+        return;
+    }
+    if (!s_mods[slot].used) {
+        return;
+    }
+    s_mods[slot].main_fn = (int (*)(int, char **))main_fn;
+    s_mods[slot].term_fn = (void (*)(void))term_fn;
+}
+
+int nnode_stop_requested(void)
+{
+    int slot = nnode_arena_owner_current();
+    if (slot < 0 || slot >= NNODE_MAX_LOADED) {
+        return 0;
+    }
+    if (!s_mods[slot].used) {
+        return 0;
+    }
+    return s_mods[slot].stop_flag;
+}
+
+uintptr_t nnode_lifecycle_resolve(const char *name)
+{
+    if (!name) {
+        return 0;
+    }
+    if (strcmp(name, "nnode_register") == 0) {
+        return (uintptr_t)nnode_register;
+    }
+    if (strcmp(name, "nnode_stop_requested") == 0) {
+        return (uintptr_t)nnode_stop_requested;
+    }
+    return 0;
+}
 
 /* C3 uses the non-mirror loader path (single psegment, sec[] stays empty),
  * so measure the images from the program headers of the resident payload:
@@ -307,7 +390,7 @@ int nnode_elf_any_loaded(void)
     return 0;
 }
 
-int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
+int nnode_elf_run(const char *name, int *id_out, char *errbuf, size_t errlen)
 {
     elf_file_t f;
     esp_elf_t elf;
@@ -322,10 +405,8 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
         snprintf(errbuf, errlen, "not_elf");
         return -1;
     }
-    if (nnode_elf_loaded(name)) {
-        snprintf(errbuf, errlen, "already_loaded");
-        return -1;
-    }
+    /* Same file may run several times: each instance gets its own
+     * slot with a fresh image (code and data duplicated). */
     size_t exec_free, mem_free;
     int prev_active;
     nnode_arena_init();
@@ -347,6 +428,12 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
         return -1;
     }
     nnode_arena_alloc(slot);
+    /* Reserve the slot before the entry runs: nnode_register writes
+     * the main/term pointers here while the slot is active. */
+    memset(&s_mods[slot], 0, sizeof(s_mods[slot]));
+    s_mods[slot].used = 1;
+    s_mods[slot].id = s_next_id++;
+    strncpy(s_mods[slot].name, name, sizeof(s_mods[slot].name) - 1);
     memset(&f, 0, sizeof(f));
     {
         /* The loader builds FS_PATH/name, so the subdir goes here. */
@@ -354,6 +441,7 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
         snprintf(rel, sizeof(rel), NNOODE_PROGRAMS_DIR "/%s", name);
         if (esp_elf_open(&f, rel) != 0) {
             snprintf(errbuf, errlen, "elf_open");
+            memset(&s_mods[slot], 0, sizeof(s_mods[slot]));
             nnode_arena_free_slot(slot);
             return -1;
         }
@@ -362,6 +450,7 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
     if (esp_elf_init(&elf) != 0) {
         snprintf(errbuf, errlen, "elf_init");
         esp_elf_close(&f);
+        memset(&s_mods[slot], 0, sizeof(s_mods[slot]));
         nnode_arena_free_slot(slot);
         return -1;
     }
@@ -371,6 +460,7 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
         snprintf(errbuf, errlen, "elf_relocate");
         esp_elf_deinit(&elf);
         esp_elf_close(&f);
+        memset(&s_mods[slot], 0, sizeof(s_mods[slot]));
         nnode_arena_free_slot(slot);
         return -1;
     }
@@ -378,59 +468,126 @@ int nnode_elf_run(const char *name, char *errbuf, size_t errlen)
     prev_active = nnode_arena_set_active(slot);
     esp_elf_request(&elf, 0, 0, NULL);
     nnode_arena_set_active(prev_active);
+    if (!s_mods[slot].main_fn || !s_mods[slot].term_fn) {
+        ESP_LOGE(TAG, "%s missing nnode_main/nnode_term (link sdk/nnode_entry.c)", name);
+        snprintf(errbuf, errlen, "bad_abi");
+        esp_elf_deinit(&elf);
+        esp_elf_close(&f);
+        memset(&s_mods[slot], 0, sizeof(s_mods[slot]));
+        nnode_arena_free_slot(slot);
+        return -1;
+    }
     ESP_LOGI(TAG, "%s stays loaded (unload explicitly)", name);
-    memset(&s_mods[slot], 0, sizeof(s_mods[slot]));
-    s_mods[slot].used = 1;
-    strncpy(s_mods[slot].name, name, sizeof(s_mods[slot].name) - 1);
     s_mods[slot].file = f;
     s_mods[slot].elf = elf;
     measure_images(f.payload, &s_mods[slot].text_size, &s_mods[slot].data_size);
-    ESP_LOGI(TAG, "%s: text %u data %u file %u", name,
+    ESP_LOGI(TAG, "%s#%d: text %u data %u file %u", name, s_mods[slot].id,
         (unsigned)s_mods[slot].text_size, (unsigned)s_mods[slot].data_size,
         (unsigned)f.size);
+    if (id_out) {
+        *id_out = s_mods[slot].id;
+    }
     return 0;
 }
 
 
-int nnode_elf_stop(const char *name)
+int nnode_elf_stop(int id, const char *name)
 {
-    int i;
-    if (!nnode_file_valid(name)) {
+    int i, waited = 0;
+    if (id < 0 && !nnode_file_valid(name)) {
         return -1;
     }
-    for (i = 0; i < NNODE_MAX_LOADED; i++) {
-        if (s_mods[i].used && strcmp(s_mods[i].name, name) == 0) {
-            nnode_arena_kill_tasks(i);
-            nnode_arena_free_slot(i);
-            esp_elf_deinit(&s_mods[i].elf);
-            esp_elf_close(&s_mods[i].file);
-            memset(&s_mods[i], 0, sizeof(s_mods[i]));
-            ESP_LOGI(TAG, "stopped %s", name);
-            return 0;
-        }
+    i = find_slot(id, name);
+    if (i < 0) {
+        return -2;
     }
-    return -2;
+    /* SIGTERM: let the module save state and signal its tasks, then
+     * give them a grace period to exit on their own. Runs in the caller
+     * (httpd worker) with the slot active so mallocs attribute
+     * correctly. Must stay short; kill below is the SIGKILL path that
+     * never calls back into the module. */
+    s_mods[i].stop_flag = 1;
+    if (s_mods[i].term_fn) {
+        int prev = nnode_arena_set_active(i);
+        s_mods[i].term_fn();
+        nnode_arena_set_active(prev);
+    }
+    while (nnode_arena_slot_has_live_tasks(i) && waited < NNODE_STOP_GRACE_MS) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        waited += 50;
+    }
+    if (nnode_arena_slot_has_live_tasks(i)) {
+        ESP_LOGW(TAG, "stop %s#%d: %d tasks ignored SIGTERM, killing",
+            s_mods[i].name, s_mods[i].id, nnode_arena_slot_tasks(i));
+    }
+    nnode_arena_kill_tasks(i);
+    ESP_LOGI(TAG, "stopped %s#%d", s_mods[i].name, s_mods[i].id);
+    drop_slot(i);
+    return 0;
+}
+
+int nnode_elf_kill(int id, const char *name)
+{
+    int i;
+    if (id < 0 && !nnode_file_valid(name)) {
+        return -1;
+    }
+    i = find_slot(id, name);
+    if (i < 0) {
+        return -2;
+    }
+    /* SIGKILL: no hook, no grace. For state-saving stops use nnode_elf_stop. */
+    nnode_arena_kill_tasks(i);
+    ESP_LOGI(TAG, "killed %s#%d", s_mods[i].name, s_mods[i].id);
+    drop_slot(i);
+    return 0;
+}
+
+int nnode_elf_instances_json(char *buf, size_t len)
+{
+    size_t o = 0;
+    int i, first = 1;
+    if (!buf || !len) {
+        return 0;
+    }
+    o += snprintf(buf + o, len - o, "{\"instances\":[");
+    for (i = 0; i < NNODE_MAX_LOADED && o < len; i++) {
+        int tasks;
+        if (!s_mods[i].used) {
+            continue;
+        }
+        tasks = nnode_arena_slot_tasks(i);
+        o += snprintf(buf + o, len - o,
+            "%s{\"id\":%d,\"name\":\"%s\",\"state\":\"%s\",\"tasks\":%d}",
+            first ? "" : ",", s_mods[i].id, s_mods[i].name,
+            tasks > 0 ? "running" : "exited", tasks);
+        first = 0;
+    }
+    if (o < len) {
+        o += snprintf(buf + o, len - o, "]}");
+    }
+    return (int)o;
 }
 
 int nnode_elf_unload(const char *name)
 {
-    int i;
+    int i, found = 0;
     if (!nnode_file_valid(name)) {
         return -1;
     }
     for (i = 0; i < NNODE_MAX_LOADED; i++) {
         if (s_mods[i].used && strcmp(s_mods[i].name, name) == 0) {
-            if (nnode_arena_slot_has_live_tasks(i)) {
-                ESP_LOGW(TAG, "unload %s refused: kill tasks first", name);
-                return -3;
+            found = 1;
+            if (!nnode_arena_slot_has_live_tasks(i)) {
+                ESP_LOGI(TAG, "unloaded %s#%d", name, s_mods[i].id);
+                drop_slot(i);
+                return 0;
             }
-            nnode_arena_free_slot(i);
-            esp_elf_deinit(&s_mods[i].elf);
-            esp_elf_close(&s_mods[i].file);
-            memset(&s_mods[i], 0, sizeof(s_mods[i]));
-            ESP_LOGI(TAG, "unloaded %s", name);
-            return 0;
         }
+    }
+    if (found) {
+        ESP_LOGW(TAG, "unload %s refused: kill tasks first", name);
+        return -3;
     }
     return -2;
 }
