@@ -103,7 +103,9 @@ The firmware runs `esp_http_server` with a small JSON REST API:
 - files and programs: `GET /api/files`, `GET /api/files/download`,
   `POST /api/files/upload`, `POST /api/files/delete`,
    `POST /api/elf/run`, `POST /api/elf/stop`, `POST /api/elf/kill`,
-   `POST /api/elf/unload`, `GET /api/elf/instances`
+   `POST /api/elf/unload`, `GET /api/elf/instances`,
+   `GET /api/elf/autostart`, `POST /api/elf/autostart/add`,
+   `POST /api/elf/autostart/remove`, `POST /api/elf/autostart/move`
 - backup: `GET /api/backup`, `POST /api/backup/restore`,
   `POST /api/factory-reset`, `GET /api/config/export`
 

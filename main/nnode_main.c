@@ -37,5 +37,6 @@ void app_main(void)
     nnode_sys_apply();
     nnode_graphs_start();
     nnode_http_start();
+    nnode_autostart_run();
     ESP_LOGI(TAG, "ready");
 }

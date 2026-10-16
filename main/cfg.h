@@ -27,6 +27,7 @@
 #define NNOODE_CFG_PKG_TIME "time"
 #define NNOODE_CFG_PKG_STA "sta"
 #define NNOODE_CFG_PKG_AP "ap"
+#define NNOODE_CFG_PKG_AUTOSTART "autostart"
 
 /* Create the config dir if missing. Returns 0 on success. */
 int nnode_cfg_init(void);

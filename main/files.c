@@ -8,6 +8,7 @@
 #include "esp_heap_caps.h"
 #include "private/elf_types.h"
 #include "arena.h"
+#include "cfg.h"
 #include "files.h"
 
 static const char *TAG = "nnode_files";
@@ -590,4 +591,226 @@ int nnode_elf_unload(const char *name)
         return -3;
     }
     return -2;
+}
+
+/* Autostart list: ordered file names, one per config entry section.
+ * Order is boot order (first entry starts first). Stored in the same
+ * config package format as everything else, so backup picks it up. */
+#define NNODE_AUTOSTART_MAX NNODE_MAX_LOADED
+
+typedef struct {
+    char (*names)[65];
+    int cap;
+    int n;
+    int cur;
+} autostart_ctx_t;
+
+static int autostart_section(void *ctx, const char *type, const char *name, int has_name)
+{
+    autostart_ctx_t *c = ctx;
+    (void)name;
+    (void)has_name;
+    c->cur = -1;
+    if (strcmp(type, "entry") == 0 && c->n < c->cap) {
+        c->cur = c->n++;
+        c->names[c->cur][0] = 0;
+    }
+    return 0;
+}
+
+static int autostart_option(void *ctx, const char *key, const char *value)
+{
+    autostart_ctx_t *c = ctx;
+    if (c->cur < 0 || strcmp(key, "name") != 0) {
+        return 0;
+    }
+    if (nnode_file_valid(value)) {
+        snprintf(c->names[c->cur], 65, "%s", value);
+    }
+    return 0;
+}
+
+static const nnode_cfg_cb_t autostart_cb = { autostart_section, autostart_option, NULL };
+
+/* Fixed 65-byte slot copy (memmove: dst and src may overlap). */
+static void autostart_copy(char dst[65], const char src[65])
+{
+    memmove(dst, src, 65);
+}
+
+int nnode_autostart_load(char names[][65], int max)
+{
+    autostart_ctx_t c;
+    int i, w = 0;
+    if (!names || max <= 0) {
+        return 0;
+    }
+    memset(&c, 0, sizeof(c));
+    memset(names, 0, (size_t)max * 65);
+    c.names = names;
+    c.cap = max;
+    c.cur = -1;
+    if (nnode_cfg_parse(NNOODE_CFG_PKG_AUTOSTART, &autostart_cb, &c) != 0) {
+        return 0;
+    }
+    /* Drop empties and later duplicates, keep first-seen order. */
+    for (i = 0; i < c.n; i++) {
+        int j, dup = 0;
+        if (!names[i][0]) {
+            continue;
+        }
+        for (j = 0; j < w; j++) {
+            if (strcmp(names[j], names[i]) == 0) {
+                dup = 1;
+                break;
+            }
+        }
+        if (!dup) {
+            if (w != i) {
+                autostart_copy(names[w], names[i]);
+            }
+            w++;
+        }
+    }
+    for (i = w; i < max; i++) {
+        names[i][0] = 0;
+    }
+    return w;
+}
+
+static int autostart_store(char names[][65], int n)
+{
+    char text[1024];
+    char e[140];
+    size_t o = 0;
+    int i;
+    o += snprintf(text + o, sizeof(text) - o, "package autostart\n");
+    for (i = 0; i < n && o < sizeof(text); i++) {
+        if (!nnode_file_valid(names[i])) {
+            return -1;
+        }
+        if (nnode_cfg_escape(names[i], e, sizeof(e)) != 0) {
+            return -1;
+        }
+        o += snprintf(text + o, sizeof(text) - o,
+            "config entry '%s'\n\toption name '%s'\n", e, e);
+    }
+    if (o >= sizeof(text)) {
+        return -1;
+    }
+    return nnode_cfg_write(NNOODE_CFG_PKG_AUTOSTART, text);
+}
+
+int nnode_autostart_json(char *buf, size_t len)
+{
+    char names[NNODE_AUTOSTART_MAX][65];
+    int n, i;
+    size_t o = 0;
+    if (!buf || !len) {
+        return 0;
+    }
+    n = nnode_autostart_load(names, NNODE_AUTOSTART_MAX);
+    o += snprintf(buf + o, len - o, "{\"progs\":[");
+    for (i = 0; i < n && o < len; i++) {
+        o += snprintf(buf + o, len - o, "%s\"%s\"", i ? "," : "", names[i]);
+    }
+    if (o < len) {
+        o += snprintf(buf + o, len - o, "]}");
+    }
+    return (int)o;
+}
+
+int nnode_autostart_add(const char *name)
+{
+    char names[NNODE_AUTOSTART_MAX][65];
+    char path[80];
+    int n, i;
+    if (!nnode_file_valid(name)) {
+        return -1;
+    }
+    snprintf(path, sizeof(path), "/data/" NNOODE_PROGRAMS_DIR "/%s", name);
+    if (!has_elf_magic(path)) {
+        return -2;
+    }
+    n = nnode_autostart_load(names, NNODE_AUTOSTART_MAX);
+    for (i = 0; i < n; i++) {
+        if (strcmp(names[i], name) == 0) {
+            return -3;
+        }
+    }
+    if (n >= NNODE_AUTOSTART_MAX) {
+        return -4;
+    }
+    snprintf(names[n], sizeof(names[n]), "%s", name);
+    return autostart_store(names, n + 1);
+}
+
+int nnode_autostart_remove(const char *name)
+{
+    char names[NNODE_AUTOSTART_MAX][65];
+    int n, i, w = 0;
+    if (!nnode_file_valid(name)) {
+        return -1;
+    }
+    n = nnode_autostart_load(names, NNODE_AUTOSTART_MAX);
+    for (i = 0; i < n; i++) {
+        if (strcmp(names[i], name) == 0) {
+            continue;
+        }
+        if (w != i) {
+            autostart_copy(names[w], names[i]);
+        }
+        w++;
+    }
+    if (w == n) {
+        return -2;
+    }
+    return autostart_store(names, w);
+}
+
+int nnode_autostart_move(const char *name, int dir)
+{
+    char names[NNODE_AUTOSTART_MAX][65];
+    char tmp[65];
+    int n, i, at = -1, to;
+    if (!nnode_file_valid(name) || (dir != -1 && dir != 1)) {
+        return -1;
+    }
+    n = nnode_autostart_load(names, NNODE_AUTOSTART_MAX);
+    for (i = 0; i < n; i++) {
+        if (strcmp(names[i], name) == 0) {
+            at = i;
+            break;
+        }
+    }
+    if (at < 0) {
+        return -2;
+    }
+    to = at + dir;
+    if (to < 0 || to >= n) {
+        return 0;
+    }
+    snprintf(tmp, sizeof(tmp), "%s", names[at]);
+    autostart_copy(names[at], names[to]);
+    autostart_copy(names[to], tmp);
+    return autostart_store(names, n);
+}
+
+/* Boot: start the autostart list in stored order. Failures (deleted
+ * file, no free slot) are logged and skipped, never fatal. Desired
+ * state, not supervision: a crashed module is not restarted. */
+void nnode_autostart_run(void)
+{
+    char names[NNODE_AUTOSTART_MAX][65];
+    int n, i;
+    n = nnode_autostart_load(names, NNODE_AUTOSTART_MAX);
+    for (i = 0; i < n; i++) {
+        char err[96];
+        int id = 0;
+        if (nnode_elf_run(names[i], &id, err, sizeof(err)) != 0) {
+            ESP_LOGW(TAG, "autostart %s skipped: %s", names[i], err);
+        } else {
+            ESP_LOGI(TAG, "autostart %s#%d", names[i], id);
+        }
+    }
 }

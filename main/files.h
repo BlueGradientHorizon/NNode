@@ -23,6 +23,16 @@ int nnode_elf_instances_json(char *buf, size_t len);
 int nnode_elf_unload(const char *name);
 int nnode_elf_loaded(const char *name);
 int nnode_elf_any_loaded(void);
+/* Autostart: ordered list of program files started at boot, in order.
+ * Load fills names (up to max), returns count. Add: 0 ok, -1 bad name,
+ * -2 no such ELF, -3 duplicate, -4 list full. Remove/move: 0 ok,
+ * -1 bad args, -2 not in list (move at an edge is a no-op ok). */
+int nnode_autostart_load(char names[][65], int max);
+int nnode_autostart_json(char *buf, size_t len);
+int nnode_autostart_add(const char *name);
+int nnode_autostart_remove(const char *name);
+int nnode_autostart_move(const char *name, int dir);
+void nnode_autostart_run(void);
 /* Lifecycle contract (see sdk/nnode_sdk.h): modules register their
  * nnode_main/nnode_term via the entry shim. Resolver hook below. */
 void nnode_register(void *main_fn, void *term_fn);

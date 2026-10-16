@@ -43,7 +43,8 @@ static const char *TAG = "nnode_http";
  * exists (409 SSID already saved).
  * Backup restore (400): parse, version, config, wipe, files, space.
  * Modules: bad_name, not_elf, already_loaded, no_slots, no_mem,
- * elf_open, elf_init, elf_relocate, tasks_running (409 live tasks).
+ * elf_open, elf_init, elf_relocate, tasks_running (409 live tasks),
+ * dup (409 already in autostart).
  * Files: open (500 cannot create), write (500 write failed).
  * Reset: tasks_running (409 unload modules first), reset (500 failed). */
 static esp_err_t send_err(httpd_req_t *r, const char *code)
@@ -79,6 +80,10 @@ static esp_err_t h_elfunload(httpd_req_t *r);
 static esp_err_t h_elfstop(httpd_req_t *r);
 static esp_err_t h_elfkill(httpd_req_t *r);
 static esp_err_t h_elfinstances(httpd_req_t *r);
+static esp_err_t h_autostart(httpd_req_t *r);
+static esp_err_t h_autostart_add(httpd_req_t *r);
+static esp_err_t h_autostart_remove(httpd_req_t *r);
+static esp_err_t h_autostart_move(httpd_req_t *r);
 static esp_err_t h_graphs(httpd_req_t *r);
 static esp_err_t h_log(httpd_req_t *r);
 static esp_err_t h_logclear(httpd_req_t *r);
@@ -148,7 +153,9 @@ void nnode_http_start(void)
 {
     httpd_handle_t h = NULL;
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
-    c.max_uri_handlers = 48;
+    /* One slot per registered URI (see the u_* list below): a failed
+     * registration is silent and the endpoint 404s, so keep headroom. */
+    c.max_uri_handlers = 64;
     /* 8 KB: console logging (ESP_LOG over USB-JTAG) plus TLS-less chunked
      * IO no longer fit 6 KB once the backup handlers landed. */
     c.stack_size = 8192;
@@ -212,6 +219,10 @@ void nnode_http_start(void)
     static const httpd_uri_t u_stop = { .uri = "/api/elf/stop", .method = HTTP_POST, .handler = h_elfstop };
     static const httpd_uri_t u_elfkill = { .uri = "/api/elf/kill", .method = HTTP_POST, .handler = h_elfkill };
     static const httpd_uri_t u_instances = { .uri = "/api/elf/instances", .method = HTTP_GET, .handler = h_elfinstances };
+    static const httpd_uri_t u_autostart = { .uri = "/api/elf/autostart", .method = HTTP_GET, .handler = h_autostart };
+    static const httpd_uri_t u_asadd = { .uri = "/api/elf/autostart/add", .method = HTTP_POST, .handler = h_autostart_add };
+    static const httpd_uri_t u_asrm = { .uri = "/api/elf/autostart/remove", .method = HTTP_POST, .handler = h_autostart_remove };
+    static const httpd_uri_t u_asmv = { .uri = "/api/elf/autostart/move", .method = HTTP_POST, .handler = h_autostart_move };
     static const httpd_uri_t u_graphs = { .uri = "/api/graphs", .method = HTTP_GET, .handler = h_graphs };
     static const httpd_uri_t u_log = { .uri = "/api/log", .method = HTTP_GET, .handler = h_log };
     static const httpd_uri_t u_logclear = { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_logclear };
@@ -236,6 +247,10 @@ void nnode_http_start(void)
     httpd_register_uri_handler(h, &u_stop);
     httpd_register_uri_handler(h, &u_elfkill);
     httpd_register_uri_handler(h, &u_instances);
+    httpd_register_uri_handler(h, &u_autostart);
+    httpd_register_uri_handler(h, &u_asadd);
+    httpd_register_uri_handler(h, &u_asrm);
+    httpd_register_uri_handler(h, &u_asmv);
     httpd_register_uri_handler(h, &u_graphs);
     httpd_register_uri_handler(h, &u_log);
     httpd_register_uri_handler(h, &u_logclear);
@@ -1530,4 +1545,104 @@ static esp_err_t h_elfinstances(httpd_req_t *r)
     httpd_resp_send(r, b, n < 0 ? 0 : n);
     free(b);
     return ESP_OK;
+}
+
+static esp_err_t h_autostart(httpd_req_t *r)
+{
+    char *b = malloc(1024);
+    int n;
+    if (!b) {
+        return ESP_ERR_NO_MEM;
+    }
+    n = nnode_autostart_json(b, 1024);
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    httpd_resp_send(r, b, n < 0 ? 0 : n);
+    free(b);
+    return ESP_OK;
+}
+
+static esp_err_t h_autostart_add(httpd_req_t *r)
+{
+    char name[72];
+    int rc;
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    if (query_name(r, name, sizeof(name)) != 0) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    rc = nnode_autostart_add(name);
+    httpd_resp_set_type(r, "application/json");
+    if (rc == 0) {
+        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    }
+    if (rc == -3) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return send_err(r, "dup");
+    }
+    if (rc == -4) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return send_err(r, "no_slots");
+    }
+    httpd_resp_set_status(r, "404 Not Found");
+    return send_err(r, "not_found");
+}
+
+static esp_err_t h_autostart_remove(httpd_req_t *r)
+{
+    char name[72];
+    int rc;
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    if (query_name(r, name, sizeof(name)) != 0) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    rc = nnode_autostart_remove(name);
+    httpd_resp_set_type(r, "application/json");
+    if (rc == 0) {
+        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    }
+    httpd_resp_set_status(r, "404 Not Found");
+    return send_err(r, "not_found");
+}
+
+static esp_err_t h_autostart_move(httpd_req_t *r)
+{
+    char name[72];
+    char q[160], dir[8];
+    int rc, step;
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    if (query_name(r, name, sizeof(name)) != 0) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "dir", dir, sizeof(dir)) != ESP_OK) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    if (strcmp(dir, "up") == 0) {
+        step = -1;
+    } else if (strcmp(dir, "down") == 0) {
+        step = 1;
+    } else {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    rc = nnode_autostart_move(name, step);
+    httpd_resp_set_type(r, "application/json");
+    if (rc == 0) {
+        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    }
+    httpd_resp_set_status(r, "404 Not Found");
+    return send_err(r, "not_found");
 }
