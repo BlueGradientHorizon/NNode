@@ -48,23 +48,6 @@ void nnode_fs_mount(void)
         r2 = esp_littlefs_info("storage", &t, &u);
         ESP_LOGI(TAG, "remounted /data total=%u used=%u info=%d", (unsigned)t, (unsigned)u, (int)r2);
     }
-    FILE *f = fopen("/data/.selftest", "w");
-    if (!f) {
-        ESP_LOGE(TAG, "selftest write open failed");
-        return;
-    }
-    int w = fputs("nnode-ok", f);
-    int ce = fclose(f);
-    ESP_LOGI(TAG, "selftest write w=%d fclose=%d", w, ce);
-    char rb[16];
-    memset(rb, 0, sizeof(rb));
-    int rr = -1;
-    f = fopen("/data/.selftest", "r");
-    if (f) {
-        rr = fread(rb, 1, sizeof(rb) - 1, f);
-        fclose(f);
-    }
-    ESP_LOGI(TAG, "selftest read rr=%d data=%s", rr, rb);
 }
 
 void nnode_fs_usage(uint64_t *total, uint64_t *used)

@@ -105,34 +105,44 @@ The firmware runs `esp_http_server` with a small JSON REST API:
    `POST /api/elf/run`, `POST /api/elf/stop`, `POST /api/elf/kill`,
    `POST /api/elf/unload`, `GET /api/elf/instances`,
    `GET /api/elf/autostart`, `POST /api/elf/autostart/add`,
-   `POST /api/elf/autostart/remove`, `POST /api/elf/autostart/move`
+   `POST /api/elf/autostart/remove`, `POST /api/elf/autostart/move`,
+   `GET /api/elf/config`, `POST /api/elf/config/save`
 - backup: `GET /api/backup`, `POST /api/backup/restore`,
   `POST /api/factory-reset`, `GET /api/config/export`
 
-Settings live in text files under `/data/config` (one file per package:
+Settings live in text files under `/data/configs` (one file per package:
 `device`, `time`, `sta`, `ap`); user files live in LittleFS on `/data`.
 `nvs_flash_init` stays only because the IDF WiFi driver requires it -
 no NNode setting is stored in NVS. A station watchdog keeps retrying
 known networks and falls back to the
 access point after 10 seconds without a connection.
 
-Each settings package is a text file with `package` / `config` /
-`option` / `list` lines, e.g. `/data/config/time`:
+Each settings package is a flat text file with `package` / `version` /
+`<key> <value>` lines, e.g. `/data/configs/time`:
 
 ```
 package time
-config clock 'clock'
-        option tz 'UTC0'
-        option zonename ''
-config ntp 'ntp'
-        option enabled '1'
-        list server 'pool.ntp.org'
+version 1
+tz 'UTC0'
+zonename ''
+enabled '1'
+server1 'pool.ntp.org'
+server2 ''
+server3 ''
 ```
 
-`device` holds the stable id and hostname, `sta` the saved networks
-(one `config net` section each) plus the last-ok marker, `ap` the
-access point. All four files are seeded with defaults on the first
-boot; later every change rewrites its file immediately.
+Field types (bool, int, port, ip4addr, netmask, cidr4, macaddr,
+hostname, range, wpakey, string, enum, list) are declared in the
+schema: compiled-in defaults for firmware packages
+(`main/fw_defaults.c`), an embedded `.nnode_default` section for
+loadable modules. Values are validated against the schema on save,
+restore and first sight.
+
+`device` holds the stable id and hostname, `sta` the network count
+plus the last-ok marker, `nets` the 8 saved network slots, `ap` the
+access point, `autostart` the boot list. All files are seeded with
+defaults on the first boot; later every change rewrites its file
+immediately (atomically, tmp plus rename).
 `GET /api/config/export` returns all packages concatenated, and the
 CBOR backup embeds each package text plus the plain `/data` files.
 
@@ -166,11 +176,34 @@ and reclaimed on stop/kill; anything else (open files, queues) must be
 released by the module itself. Module `printf` goes to UART only, it
 never lands in `/api/log` (that buffer captures `esp_log` output).
 
+### Module settings
+
+A module ships `config.defaults` next to its sources: `package` plus
+`version`, `#@tab` / `#@field` meta lines and one `<key> <value>` line
+per field (the default). `examples/build.py` validates it with
+`tools/nnode_cfg_validate.py` and embeds it verbatim as the
+`.nnode_default` ELF section. The firmware finds the section by its ELF
+headers (module code never runs for this) and creates
+`/data/configs/<pkg>` on first sight: listing the Programs subsection
+or running the module, whichever comes first. On upgrade new keys are
+added with defaults and orphan keys are dropped, user values are kept.
+The Settings button stays inactive without valid defaults. The package
+name must not be firmware-reserved (device, time, sta, ap, autostart).
+Tabs are optional (none, or at least two); a field may carry
+`show_if="mode==blink"` to hide it in the panel until the condition on
+earlier bool/enum/int fields holds (UI-only, the module reads every
+key). Types: bool, int, port, ip4addr, netmask, cidr4, macaddr,
+hostname, range, wpakey, string, enum, list (one line, comma-separated).
+The panel renders tabs and fields generically (`GET /api/elf/config`,
+`POST /api/elf/config/save`, values validated server-side); the module
+reads its own values via `nnode_config_get*` (`sdk/nnode_sdk.h`),
+restart to apply. See `examples/blink/config.defaults`.
+
 ### Limits
 
 - At most 8 saved WiFi networks; SSID is 1-32 chars, passphrase is 0-63
    chars (PSK or open networks only, no Enterprise or WEP); passphrases are
-   stored in `/data/config` as plain text.
+   stored in `/data/configs` as plain text.
 - Path segments in `/data` may not be `.` or contain `/` or `..` and are
    capped at 64 chars (8 levels, 128 chars total); only `.elf` files in
    `/data/programs` can be executed, and up to 8 instances stay loaded

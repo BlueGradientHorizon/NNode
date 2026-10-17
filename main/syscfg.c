@@ -8,6 +8,9 @@
 #include "esp_system.h"
 #include "esp_sntp.h"
 #include "cfg.h"
+#include "cfg_types.h"
+#include "cfg_schema.h"
+#include "fw_defaults.h"
 #include "wifi.h"
 #include "net.h"
 #include "files.h"
@@ -35,69 +38,34 @@ typedef struct {
     char hostname[NNODE_HOSTNAME_MAX + 1];
     int has_devid;
     int has_hostname;
-    char sectype[NNOODE_CFG_TYPE_MAX];
-    char secname[NNOODE_CFG_NAME_MAX];
-    int in_device;
 } device_ctx_t;
 
-static int device_section(void *ctx, const char *type, const char *name, int has_name)
-{
-    device_ctx_t *c = ctx;
-    snprintf(c->sectype, sizeof(c->sectype), "%s", type);
-    snprintf(c->secname, sizeof(c->secname), "%s", has_name ? name : "");
-    c->in_device = strcmp(type, "device") == 0;
-    return 0;
-}
-
-static int device_option(void *ctx, const char *key, const char *value)
-{
-    device_ctx_t *c = ctx;
-    if (!c->in_device) {
-        return 0;
-    }
-    if (strcmp(key, "devid") == 0) {
-        if (strlen(value) >= sizeof(c->devid)) {
-            return -1;
-        }
-        snprintf(c->devid, sizeof(c->devid), "%s", value);
-        c->has_devid = 1;
-    } else if (strcmp(key, "hostname") == 0) {
-        if (strlen(value) >= sizeof(c->hostname)) {
-            return -1;
-        }
-        snprintf(c->hostname, sizeof(c->hostname), "%s", value);
-        c->has_hostname = 1;
-    }
-    return 0;
-}
-
-static const nnode_cfg_cb_t device_cb = { device_section, device_option, NULL };
-
-static int device_load(device_ctx_t *c)
+static void device_load(device_ctx_t *c)
 {
     memset(c, 0, sizeof(*c));
-    if (nnode_cfg_parse(NNOODE_CFG_PKG_DEVICE, &device_cb, c) != 0) {
-        memset(c, 0, sizeof(*c));
-        return -1;
+    if (nnode_schema_lookup(NNOODE_CFG_PKG_DEVICE, "devid",
+            c->devid, sizeof(c->devid)) == 0) {
+        c->has_devid = 1;
     }
-    return 0;
+    if (nnode_schema_lookup(NNOODE_CFG_PKG_DEVICE, "hostname",
+            c->hostname, sizeof(c->hostname)) == 0) {
+        c->has_hostname = 1;
+    }
 }
 
 static int device_store(const char *devid, const char *hostname)
 {
-    char ed[16], eh[NNODE_HOSTNAME_MAX * 2 + 8];
-    char text[256];
-    if (nnode_cfg_escape(devid, ed, sizeof(ed)) != 0 ||
-        nnode_cfg_escape(hostname, eh, sizeof(eh)) != 0) {
+    char keys[2][NNODE_SCHEMA_ID_MAX + 1];
+    char vals[2][128];
+    if (!devid || !hostname || strlen(devid) >= 8 || strlen(hostname) > 32) {
         return -1;
     }
-    snprintf(text, sizeof(text),
-        "package device\n"
-        "config device 'device'\n"
-        "\toption devid '%s'\n"
-        "\toption hostname '%s'\n",
-        ed, eh);
-    return nnode_cfg_write(NNOODE_CFG_PKG_DEVICE, text);
+    memcpy(keys[0], "devid", 6);
+    memcpy(vals[0], devid, strlen(devid) + 1);
+    memcpy(keys[1], "hostname", 9);
+    memcpy(vals[1], hostname, strlen(hostname) + 1);
+    return nnode_schema_store(nnode_fw_defaults(NNOODE_CFG_PKG_DEVICE),
+        keys, vals, 2);
 }
 
 void nnode_devid(char out[5])
@@ -233,104 +201,81 @@ int nnode_hostname_set(const char *name)
 /* In-memory image of the time package. */
 typedef struct {
     int enabled;
-    int has_enabled;
     char servers[NNODE_NTP_MAX][NNODE_NTP_SRV_LEN];
     int nservers;
     char tz[NNODE_TZ_MAX + 1];
     char zonename[NNODE_TZ_MAX + 1];
-    int has_tz;
-    int has_zonename;
-    char sectype[NNOODE_CFG_TYPE_MAX];
 } time_ctx_t;
-
-static int time_section(void *ctx, const char *type, const char *name, int has_name)
-{
-    time_ctx_t *c = ctx;
-    (void)name;
-    (void)has_name;
-    snprintf(c->sectype, sizeof(c->sectype), "%s", type);
-    return 0;
-}
-
-static int time_option(void *ctx, const char *key, const char *value)
-{
-    time_ctx_t *c = ctx;
-    if (strcmp(c->sectype, "clock") == 0) {
-        if (strcmp(key, "tz") == 0) {
-            if (strlen(value) > NNODE_TZ_MAX) {
-                return -1;
-            }
-            snprintf(c->tz, sizeof(c->tz), "%s", value);
-            c->has_tz = 1;
-        } else if (strcmp(key, "zonename") == 0) {
-            if (strlen(value) > NNODE_TZ_MAX) {
-                return -1;
-            }
-            snprintf(c->zonename, sizeof(c->zonename), "%s", value);
-            c->has_zonename = 1;
-        }
-    } else if (strcmp(c->sectype, "ntp") == 0) {
-        if (strcmp(key, "enabled") == 0) {
-            c->enabled = value[0] == '1' ? 1 : 0;
-            c->has_enabled = 1;
-        }
-    }
-    return 0;
-}
-
-static int time_list(void *ctx, const char *key, const char *value)
-{
-    time_ctx_t *c = ctx;
-    if (strcmp(c->sectype, "ntp") == 0 && strcmp(key, "server") == 0) {
-        if (c->nservers >= NNODE_NTP_MAX || strlen(value) >= NNODE_NTP_SRV_LEN) {
-            return -1;
-        }
-        snprintf(c->servers[c->nservers], sizeof(c->servers[0]), "%s", value);
-        c->nservers++;
-    }
-    return 0;
-}
-
-static const nnode_cfg_cb_t time_cb = { time_section, time_option, time_list };
 
 static void time_load(time_ctx_t *c)
 {
+    char b[16], key[8];
+    int i;
     memset(c, 0, sizeof(*c));
-    if (nnode_cfg_parse(NNOODE_CFG_PKG_TIME, &time_cb, c) != 0) {
-        memset(c, 0, sizeof(*c));
+    if (nnode_schema_lookup(NNOODE_CFG_PKG_TIME, "enabled", b, sizeof(b)) == 0) {
+        c->enabled = b[0] == '1' ? 1 : 0;
+    }
+    if (nnode_schema_lookup(NNOODE_CFG_PKG_TIME, "tz", c->tz,
+            sizeof(c->tz)) != 0) {
+        c->tz[0] = 0;
+    }
+    if (nnode_schema_lookup(NNOODE_CFG_PKG_TIME, "zonename", c->zonename,
+            sizeof(c->zonename)) != 0) {
+        c->zonename[0] = 0;
+    }
+    for (i = 0; i < NNODE_NTP_MAX; i++) {
+        snprintf(key, sizeof(key), "server%d", i + 1);
+        if (nnode_schema_lookup(NNOODE_CFG_PKG_TIME, key,
+                c->servers[c->nservers],
+                sizeof(c->servers[c->nservers])) != 0 ||
+            !c->servers[c->nservers][0]) {
+            c->servers[c->nservers][0] = 0;
+            continue;
+        }
+        c->nservers++;
     }
 }
 
 static int time_store(const time_ctx_t *c)
 {
-    char text[768];
-    size_t o = 0;
-    char e[NNODE_TZ_MAX * 2 + 8];
+    char keys[6][NNODE_SCHEMA_ID_MAX + 1];
+    char vals[6][128];
+    char key[12];
     int i;
-    o += snprintf(text + o, sizeof(text) - o,
-        "package time\n"
-        "config clock 'clock'\n");
-    if (nnode_cfg_escape(c->tz[0] ? c->tz : "UTC0", e, sizeof(e)) != 0) {
+    if (!c) {
         return -1;
     }
-    o += snprintf(text + o, sizeof(text) - o, "\toption tz '%s'\n", e);
-    if (nnode_cfg_escape(c->zonename, e, sizeof(e)) != 0) {
-        return -1;
-    }
-    o += snprintf(text + o, sizeof(text) - o, "\toption zonename '%s'\n", e);
-    o += snprintf(text + o, sizeof(text) - o,
-        "config ntp 'ntp'\n"
-        "\toption enabled '%d'\n", c->enabled ? 1 : 0);
-    for (i = 0; i < c->nservers && o < sizeof(text); i++) {
-        if (nnode_cfg_escape(c->servers[i], e, sizeof(e)) != 0) {
+    memcpy(keys[0], "tz", 3);
+    if (c->tz[0]) {
+        if (strlen(c->tz) > NNODE_TZ_MAX) {
             return -1;
         }
-        o += snprintf(text + o, sizeof(text) - o, "\tlist server '%s'\n", e);
+        memcpy(vals[0], c->tz, strlen(c->tz) + 1);
+    } else {
+        memcpy(vals[0], "UTC0", 5);
     }
-    if (o >= sizeof(text)) {
+    memcpy(keys[1], "zonename", 9);
+    if (strlen(c->zonename) > NNODE_TZ_MAX) {
         return -1;
     }
-    return nnode_cfg_write(NNOODE_CFG_PKG_TIME, text);
+    memcpy(vals[1], c->zonename, strlen(c->zonename) + 1);
+    memcpy(keys[2], "enabled", 8);
+    memcpy(vals[2], c->enabled ? "1" : "0", 2);
+    for (i = 0; i < NNODE_NTP_MAX; i++) {
+        snprintf(key, sizeof(key), "server%d", i + 1);
+        memcpy(keys[3 + i], key, strlen(key) + 1);
+        if (i < c->nservers && c->servers[i][0]) {
+            size_t n = strlen(c->servers[i]);
+            if (n >= NNODE_NTP_SRV_LEN) {
+                return -1;
+            }
+            memcpy(vals[3 + i], c->servers[i], n + 1);
+        } else {
+            vals[3 + i][0] = 0;
+        }
+    }
+    return nnode_schema_store(nnode_fw_defaults(NNOODE_CFG_PKG_TIME),
+        keys, vals, 6);
 }
 
 int nnode_ntp_get(int *enabled, char servers[][NNODE_NTP_SRV_LEN], int max)
@@ -398,7 +343,7 @@ int nnode_ntp_save(int enabled, const char *servers_blob)
         snprintf(c.servers[i], sizeof(c.servers[i]), "%s", srvs[i]);
         c.nservers++;
     }
-    if (!c.has_tz) {
+    if (!c.tz[0]) {
         snprintf(c.tz, sizeof(c.tz), "UTC0");
     }
     if (time_store(&c) != 0) {
@@ -505,7 +450,7 @@ int nnode_tz_get(char *out, size_t len)
         return -1;
     }
     time_load(&c);
-    if (!c.has_tz || !valid_tz(c.tz)) {
+    if (!c.tz[0] || !valid_tz(c.tz)) {
         snprintf(out, len, "%s", TZ_DEFAULT);
         return 0;
     }
@@ -521,10 +466,7 @@ int nnode_tz_save(const char *tz)
     }
     time_load(&c);
     snprintf(c.tz, sizeof(c.tz), "%s", tz);
-    c.has_tz = 1;
-    if (!c.has_zonename) {
-        c.zonename[0] = 0;
-    }
+
     return time_store(&c);
 }
 
@@ -535,7 +477,7 @@ int nnode_zonename_get(char *out, size_t len)
         return -1;
     }
     time_load(&c);
-    if (!c.has_zonename || !valid_tz(c.zonename)) {
+    if (!c.zonename[0] || !valid_tz(c.zonename)) {
         out[0] = 0;
         return 0;
     }
@@ -551,10 +493,8 @@ int nnode_zonename_save(const char *name)
     }
     time_load(&c);
     snprintf(c.zonename, sizeof(c.zonename), "%s", name);
-    c.has_zonename = 1;
-    if (!c.has_tz) {
-        snprintf(c.tz, sizeof(c.tz), "%s", TZ_DEFAULT);
-        c.has_tz = 1;
+    if (!c.tz[0]) {
+        snprintf(c.tz, sizeof(c.tz), TZ_DEFAULT);
     }
     return time_store(&c);
 }
@@ -568,147 +508,110 @@ void nnode_tz_apply(void)
     ESP_LOGI(TAG, "tz -> %s", tz);
 }
 
+static const char *kv_find(char keys[][NNODE_SCHEMA_ID_MAX + 1],
+    char vals[][128], int n, const char *key)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        if (strcmp(keys[i], key) == 0) {
+            return vals[i];
+        }
+    }
+    return NULL;
+}
+
 int nnode_device_validate(const char *text)
 {
-    device_ctx_t c;
-    static const nnode_cfg_cb_t cb = { device_section, device_option, NULL };
-    if (!text) {
-        return -1;
+    const char *def = nnode_fw_defaults(NNOODE_CFG_PKG_DEVICE);
+    /* Heap: restore runs next to 8 KB staged texts. */
+    char (*keys)[NNODE_SCHEMA_ID_MAX + 1] = malloc(sizeof(*keys) * 4);
+    char (*vals)[128] = malloc(sizeof(*vals) * 4);
+    const char *v;
+    int n = 0, rc = -1;
+    if (!keys || !vals) {
+        goto out;
     }
-    memset(&c, 0, sizeof(c));
-    if (nnode_cfg_parse_text(NNOODE_CFG_PKG_DEVICE, text, &cb, &c) != 0) {
-        return -1;
+    if (!text || nnode_schema_validate(def, text) != 0 ||
+        nnode_schema_kv(NNOODE_CFG_PKG_DEVICE, text, keys, vals, &n) != 0) {
+        goto out;
     }
-    if (!c.has_devid || !valid_devid(c.devid)) {
-        return -1;
+    v = kv_find(keys, vals, n, "devid");
+    if (!v || !valid_devid(v)) {
+        goto out;
     }
-    if (!c.has_hostname || !valid_hostname(c.hostname, NNODE_HOSTNAME_MAX)) {
-        return -1;
+    v = kv_find(keys, vals, n, "hostname");
+    if (!v || !valid_hostname(v, NNODE_HOSTNAME_MAX)) {
+        goto out;
     }
-    return 0;
-}
-
-typedef struct {
-    char sectype[NNOODE_CFG_TYPE_MAX];
-    char tz[NNODE_TZ_MAX + 1];
-    char zonename[NNODE_TZ_MAX + 1];
-    int has_tz;
-    int has_zonename;
-    int has_enabled;
-    int enabled_ok;
-    char servers[NNODE_NTP_MAX][NNODE_NTP_SRV_LEN];
-    int nservers;
-    int bad;
-} time_check_t;
-
-static int time_check_section(void *ctx, const char *type, const char *name, int has)
-{
-    time_check_t *c = ctx;
-    (void)name;
-    (void)has;
-    if (strcmp(type, "clock") != 0 && strcmp(type, "ntp") != 0) {
-        c->bad = 1;
-        return -1;
-    }
-    snprintf(c->sectype, sizeof(c->sectype), "%s", type);
-    return 0;
-}
-
-static int time_check_option(void *ctx, const char *key, const char *value)
-{
-    time_check_t *c = ctx;
-    if (strcmp(c->sectype, "clock") == 0) {
-        if (strcmp(key, "tz") == 0) {
-            if (strlen(value) > NNODE_TZ_MAX || !valid_tz(value)) {
-                return -1;
-            }
-            snprintf(c->tz, sizeof(c->tz), "%s", value);
-            c->has_tz = 1;
-        } else if (strcmp(key, "zonename") == 0) {
-            if (strlen(value) > NNODE_TZ_MAX ||
-                (value[0] && !valid_tz(value))) {
-                return -1;
-            }
-            snprintf(c->zonename, sizeof(c->zonename), "%s", value);
-            c->has_zonename = 1;
-        }
-    } else if (strcmp(c->sectype, "ntp") == 0) {
-        if (strcmp(key, "enabled") == 0) {
-            if ((value[0] != '0' && value[0] != '1') || value[1] != 0) {
-                return -1;
-            }
-            c->has_enabled = 1;
-            c->enabled_ok = 1;
-        }
-    }
-    return 0;
-}
-
-static int time_check_list(void *ctx, const char *key, const char *value)
-{
-    time_check_t *c = ctx;
-    if (strcmp(c->sectype, "ntp") == 0 && strcmp(key, "server") == 0) {
-        if (c->nservers >= NNODE_NTP_MAX || strlen(value) >= NNODE_NTP_SRV_LEN ||
-            !valid_hostname(value, NNODE_NTP_SRV_LEN - 1)) {
-            return -1;
-        }
-        snprintf(c->servers[c->nservers], sizeof(c->servers[0]), "%s", value);
-        c->nservers++;
-        return 0;
-    }
-    return -1;
+    rc = 0;
+out:
+    free(keys);
+    free(vals);
+    return rc;
 }
 
 int nnode_time_validate(const char *text)
 {
-    time_check_t c;
-    static const nnode_cfg_cb_t cb =
-        { time_check_section, time_check_option, time_check_list };
-    if (!text) {
-        return -1;
+    const char *def = nnode_fw_defaults(NNOODE_CFG_PKG_TIME);
+    char (*keys)[NNODE_SCHEMA_ID_MAX + 1] = malloc(sizeof(*keys) * 8);
+    char (*vals)[128] = malloc(sizeof(*vals) * 8);
+    const char *v;
+    int n = 0, rc = -1;
+    if (!keys || !vals) {
+        goto out;
     }
-    memset(&c, 0, sizeof(c));
-    if (nnode_cfg_parse_text(NNOODE_CFG_PKG_TIME, text, &cb, &c) != 0 || c.bad) {
-        return -1;
+    if (!text || nnode_schema_validate(def, text) != 0 ||
+        nnode_schema_kv(NNOODE_CFG_PKG_TIME, text, keys, vals, &n) != 0) {
+        goto out;
     }
-    if (c.has_tz && !valid_tz(c.tz)) {
-        return -1;
+    v = kv_find(keys, vals, n, "tz");
+    if (!v || !valid_tz(v)) {
+        goto out;
     }
-    if (!c.has_enabled) {
-        return -1;
+    v = kv_find(keys, vals, n, "zonename");
+    if (!v || (v[0] && !valid_tz(v))) {
+        goto out;
     }
-    return 0;
+    {
+        int i;
+        char key[12];
+        for (i = 1; i <= NNODE_NTP_MAX; i++) {
+            snprintf(key, sizeof(key), "server%d", i);
+            v = kv_find(keys, vals, n, key);
+            if (!v || (v[0] &&
+                    !valid_hostname(v, NNODE_NTP_SRV_LEN - 1))) {
+                goto out;
+            }
+        }
+    }
+    rc = 0;
+out:
+    free(keys);
+    free(vals);
+    return rc;
 }
 
 void nnode_cfg_seed_defaults(void)
 {
     char id[5];
-    /* Generates and stores the id on first boot; leaves the file
-     * alone when a valid id is already there. */
+    /* Device id first: the AP default SSID derives from it. Missing or
+     * foreign files heal here: ensure recreates blank shapes, the domain
+     * loaders below fill real values when the stored ones are unusable. */
     nnode_devid(id);
-    if (!nnode_cfg_exists(NNOODE_CFG_PKG_TIME)) {
-        time_ctx_t c;
-        memset(&c, 0, sizeof(c));
-        snprintf(c.tz, sizeof(c.tz), "UTC0");
-        c.has_tz = 1;
-        if (time_store(&c) != 0) {
-            ESP_LOGW(TAG, "seed time failed");
-        }
-    }
-    if (!nnode_cfg_exists(NNOODE_CFG_PKG_STA)) {
-        if (nnode_cfg_write(NNOODE_CFG_PKG_STA, "package sta\n") != 0) {
-            ESP_LOGW(TAG, "seed sta failed");
-        }
-    }
-    if (!nnode_cfg_exists(NNOODE_CFG_PKG_AP)) {
+    nnode_schema_ensure_text(nnode_fw_defaults(NNOODE_CFG_PKG_TIME));
+    nnode_schema_ensure_text(nnode_fw_defaults(NNOODE_CFG_PKG_STA));
+    nnode_schema_ensure_text(nnode_fw_defaults(NNOODE_CFG_PKG_NETS));
+    {
         nnode_ap_cfg_t ap;
-        nnode_ap_default(ap.ssid, sizeof(ap.ssid));
-        snprintf(ap.auth, sizeof(ap.auth), "open");
-        ap.pass[0] = 0;
-        snprintf(ap.mode, sizeof(ap.mode), "auto");
-        ap.nat = 0;
-        if (nnode_ap_save(&ap) != 0) {
-            ESP_LOGW(TAG, "seed ap failed");
+        if (nnode_ap_load(&ap) != 0) {
+            nnode_ap_default(ap.ssid, sizeof(ap.ssid));
+            snprintf(ap.auth, sizeof(ap.auth), "open");
+            ap.pass[0] = 0;
+            snprintf(ap.mode, sizeof(ap.mode), "auto");
+            ap.nat = 0;
+            if (nnode_ap_save(&ap) != 0) {
+                ESP_LOGW(TAG, "seed ap failed");
+            }
         }
     }
 }

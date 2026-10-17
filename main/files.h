@@ -33,6 +33,18 @@ int nnode_autostart_add(const char *name);
 int nnode_autostart_remove(const char *name);
 int nnode_autostart_move(const char *name, int dir);
 void nnode_autostart_run(void);
+/* Validate an autostart package text before committing it. */
+int nnode_autostart_validate(const char *text);
+/* Per-module settings (.nnode_default section, /data/configs/<pkg>).
+ * The panel document and save live in cfg_schema.c. Getters below read the
+ * calling instance's OWN values only: 0 ok, -1 on error. */
+int nnode_config_get(const char *key, char *out, size_t len);
+long nnode_config_get_int(const char *key, long dflt);
+int nnode_config_get_bool(const char *key, int dflt);
+long nnode_config_get_port(const char *key, long dflt);
+int nnode_config_get_ip4(const char *key, char *out, size_t len);
+int nnode_config_get_mac(const char *key, char *out, size_t len);
+int nnode_config_get_list(const char *key, char *out, size_t cap, int max);
 /* Lifecycle contract (see sdk/nnode_sdk.h): modules register their
  * nnode_main/nnode_term via the entry shim. Resolver hook below. */
 void nnode_register(void *main_fn, void *term_fn);

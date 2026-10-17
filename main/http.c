@@ -19,6 +19,7 @@
 #include "wifi.h"
 #include "nets.h"
 #include "files.h"
+#include "cfg_schema.h"
 
 extern const uint8_t _binary_index_html_gz_start[] asm("_binary_index_html_gz_start");
 extern const uint8_t _binary_index_html_gz_end[] asm("_binary_index_html_gz_end");
@@ -44,7 +45,8 @@ static const char *TAG = "nnode_http";
  * Backup restore (400): parse, version, config, wipe, files, space.
  * Modules: bad_name, not_elf, already_loaded, no_slots, no_mem,
  * elf_open, elf_init, elf_relocate, tasks_running (409 live tasks),
- * dup (409 already in autostart).
+ * dup (409 already in autostart), no_schema (404 no settings schema),
+ * cfg (400 bad settings value).
  * Files: open (500 cannot create), write (500 write failed).
  * Reset: tasks_running (409 unload modules first), reset (500 failed). */
 static esp_err_t send_err(httpd_req_t *r, const char *code)
@@ -84,6 +86,8 @@ static esp_err_t h_autostart(httpd_req_t *r);
 static esp_err_t h_autostart_add(httpd_req_t *r);
 static esp_err_t h_autostart_remove(httpd_req_t *r);
 static esp_err_t h_autostart_move(httpd_req_t *r);
+static esp_err_t h_elfconfig(httpd_req_t *r);
+static esp_err_t h_elfconfig_save(httpd_req_t *r);
 static esp_err_t h_graphs(httpd_req_t *r);
 static esp_err_t h_log(httpd_req_t *r);
 static esp_err_t h_logclear(httpd_req_t *r);
@@ -203,6 +207,8 @@ void nnode_http_start(void)
         { .uri = "/api/elf/autostart/add", .method = HTTP_POST, .handler = h_autostart_add },
         { .uri = "/api/elf/autostart/remove", .method = HTTP_POST, .handler = h_autostart_remove },
         { .uri = "/api/elf/autostart/move", .method = HTTP_POST, .handler = h_autostart_move },
+        { .uri = "/api/elf/config", .method = HTTP_GET, .handler = h_elfconfig },
+        { .uri = "/api/elf/config/save", .method = HTTP_POST, .handler = h_elfconfig_save },
         { .uri = "/api/graphs", .method = HTTP_GET, .handler = h_graphs },
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
         { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_logclear },
@@ -1609,4 +1615,81 @@ static esp_err_t h_autostart_move(httpd_req_t *r)
     }
     httpd_resp_set_status(r, "404 Not Found");
     return send_err(r, "not_found");
+}
+
+static esp_err_t h_elfconfig(httpd_req_t *r)
+{
+    char name[72];
+    char *b = malloc(8192);
+    int n;
+    if (!b) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (query_name(r, name, sizeof(name)) != 0) {
+        free(b);
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    n = nnode_config_json(name, b, 8192);
+    httpd_resp_set_type(r, "application/json");
+    if (n <= 0) {
+        free(b);
+        httpd_resp_set_status(r, "404 Not Found");
+        return send_err(r, "no_schema");
+    }
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    httpd_resp_send(r, b, n);
+    free(b);
+    return ESP_OK;
+}
+
+static esp_err_t h_elfconfig_save(httpd_req_t *r)
+{
+    char name[72];
+    char *b = malloc(2048);
+    int n, rc;
+    if (!b) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (r->method != HTTP_POST) {
+        free(b);
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    if (query_name(r, name, sizeof(name)) != 0) {
+        free(b);
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "name");
+    }
+    n = 0;
+    if (r->content_len <= 0 || r->content_len >= 2047) {
+        free(b);
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "body");
+    }
+    /* One recv is not the whole body: loop until content_len. A short
+     * body usually arrives at once, but LAN timing splits it often
+     * enough to silently keep stale values (defaults rewritten as-is). */
+    while (n < r->content_len) {
+        int k = httpd_req_recv(r, b + n, (size_t)(r->content_len - n));
+        if (k <= 0) {
+            free(b);
+            httpd_resp_set_status(r, "400 Bad Request");
+            return send_err(r, "body");
+        }
+        n += k;
+    }
+    httpd_resp_set_type(r, "application/json");
+    b[n] = 0;
+    rc = nnode_config_save(name, b);
+    free(b);
+    if (rc == 0) {
+        return httpd_resp_sendstr(r, "{\"ok\":true}");
+    }
+    if (rc == -2) {
+        httpd_resp_set_status(r, "400 Bad Request");
+        return send_err(r, "cfg");
+    }
+    httpd_resp_set_status(r, "404 Not Found");
+    return send_err(r, "no_schema");
 }

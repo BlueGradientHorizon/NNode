@@ -288,7 +288,7 @@ void nnode_wifi_start(void)
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&cfg));
         /* Driver must not persist STA creds on its own: the config
-         * files under /data/config are the single source of truth
+         * files under /data/configs are the single source of truth
          * (else "forgotten" nets keep reconnecting and empty-nets
          * boot never reaches AP). */
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));

@@ -17,7 +17,7 @@ void app_main(void)
 {
     /* NVS init serves IDF internals only (the WiFi driver aborts
      * without it, even with WIFI_STORAGE_RAM). NNode settings live
-     * in /data/config files and never touch NVS. */
+     * in /data/configs files and never touch NVS. */
     esp_err_t r = nvs_flash_init();
     if (r == ESP_ERR_NVS_NO_FREE_PAGES || r == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();

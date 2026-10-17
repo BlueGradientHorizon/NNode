@@ -1,4 +1,6 @@
 #pragma once
+#include <stddef.h>
+#include <stdint.h>
 
 /* NNode module SDK (firmware imports + user contract).
  *
@@ -31,6 +33,35 @@ void nnode_register(void *main_fn, void *term_fn) __attribute__((weak));
 /* Pollable stop flag for module tasks. Returns 1 after Stop was pressed
  * for the calling instance, 0 otherwise. */
 int nnode_stop_requested(void) __attribute__((weak));
+
+/* Per-module config. The author ships examples/<app>/config.defaults
+ * next to the module sources: package + version, #@tab/#@field meta lines
+ * and one "<key> <value>" line per field (the default). examples/build.py
+ * validates it with tools/nnode_cfg_validate.py and embeds it verbatim
+ * as the .nnode_default ELF section. On run the firmware copies the value
+ * lines to /data/configs/<pkg> when missing, adds new keys with defaults
+ * and drops orphan keys on upgrade, keeping user values otherwise.
+ * Reserved package names (device, time, sta, ap, autostart) are rejected.
+ * Tabs are optional (none, or at least two); a field may carry
+ * show_if="mode==blink" to hide it in the panel until the condition on
+ * earlier bool/enum/int fields holds. Visibility is UI-only: the module
+ * always reads every key.
+ *
+ * The getters below read the calling instance's OWN values only
+ * (the package resolves via the instance, foreign keys are rejected).
+ * Values apply at module start; changing them in the panel needs
+ * a stop+run to take effect. */
+int nnode_config_get(const char *key, char *out, size_t len) __attribute__((weak));
+long nnode_config_get_int(const char *key, long dflt) __attribute__((weak));
+int nnode_config_get_bool(const char *key, int dflt) __attribute__((weak));
+/* Port 1..65535, else dflt. */
+long nnode_config_get_port(const char *key, long dflt) __attribute__((weak));
+/* Dotted quad / MAC string copy with validation. 0 ok, -1 on error. */
+int nnode_config_get_ip4(const char *key, char *out, size_t len) __attribute__((weak));
+int nnode_config_get_mac(const char *key, char *out, size_t len) __attribute__((weak));
+/* Comma-separated single-line list: items go to out[0..max-1] (each
+ * cap-1 chars plus NUL), returns the item count, -1 on error. */
+int nnode_config_get_list(const char *key, char *out, size_t cap, int max) __attribute__((weak));
 
 /* Besides plain libc (printf, ...) and the gpio_/FreeRTOS modsym table,
  * modules may use these file ops (missing from the loader defaults):

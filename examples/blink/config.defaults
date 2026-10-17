@@ -1,0 +1,16 @@
+package blink
+version 3
+#@tab main Main
+#@tab sanitize Sanitize
+#@field mode enum vals=blink,on,off label="Mode" tab=main
+mode blink
+#@field gpio int min=0 max=21 label="LED GPIO" tab=main
+gpio 8
+#@field on_ms int min=10 max=60000 label="On time, ms" tab=main show_if="mode==blink"
+on_ms 500
+#@field off_ms int min=10 max=60000 label="Off time, ms" tab=main show_if="mode==blink"
+off_ms 500
+#@field invert bool label="Invert LED" tab=main show_if="mode==blink"
+invert 0
+#@field on_stop enum vals=enable_led,disable_led,do_nothing label="On stop" tab=sanitize
+on_stop disable_led

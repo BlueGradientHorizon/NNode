@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -10,8 +12,12 @@
 #include "arena.h"
 #include "cfg.h"
 #include "files.h"
+#include "cfg_types.h"
+#include "cfg_schema.h"
+#include "fw_defaults.h"
 
 static const char *TAG = "nnode_files";
+
 
 int nnode_file_valid(const char *name)
 {
@@ -159,7 +165,9 @@ int nnode_files_json(char *buf, size_t len, const char *dir)
         return snprintf(buf, len, "{\"error\":\"fs\"}");
     }
     /* Module slots keep bare names, so the loaded flag is meaningful
-     * for the root and the programs dir only. */
+     * for the root and the programs dir only. Settings probe (defaults
+     * section scan, read-only) runs for programs only; values files
+     * are created on run and on Settings open, never here. */
     in_mods = at_root || strcmp(dir, NNOODE_PROGRAMS_DIR) == 0;
     if (at_root) {
         snprintf(base, sizeof(base), "/data");
@@ -189,11 +197,16 @@ int nnode_files_json(char *buf, size_t len, const char *dir)
                 "\"loaded\":0,\"is_elf\":0,\"dir\":1}",
                 first ? "" : ",", e->d_name);
         } else {
+            int is_elf = has_elf_magic(path);
+            int has_schema = 0;
+            if (!at_root && strcmp(dir, NNOODE_PROGRAMS_DIR) == 0 && is_elf) {
+                has_schema = nnode_schema_has(e->d_name);
+            }
             o += snprintf(buf + o, len - o, "%s{\"name\":\"%s\",\"size\":%u,"
-                "\"loaded\":%d,\"is_elf\":%d,\"dir\":0}",
+                "\"loaded\":%d,\"is_elf\":%d,\"has_schema\":%d,\"dir\":0}",
                 first ? "" : ",", e->d_name, (unsigned)st.st_size,
                 in_mods && nnode_elf_loaded(e->d_name) ? 1 : 0,
-                has_elf_magic(path) ? 1 : 0);
+                is_elf ? 1 : 0, has_schema);
         }
         first = 0;
     }
@@ -250,6 +263,7 @@ typedef struct {
     int (*main_fn)(int argc, char *argv[]);
     void (*term_fn)(void);
     int stop_flag; /* set by stop, polled via nnode_stop_requested */
+    char cfg_pkg[24]; /* settings package, pinned at run */
 } loaded_mod_t;
 static loaded_mod_t s_mods[NNODE_MAX_LOADED];
 static int s_next_id = 1;
@@ -329,7 +343,162 @@ uintptr_t nnode_lifecycle_resolve(const char *name)
     if (strcmp(name, "nnode_stop_requested") == 0) {
         return (uintptr_t)nnode_stop_requested;
     }
+    if (strcmp(name, "nnode_config_get") == 0) {
+        return (uintptr_t)nnode_config_get;
+    }
+    if (strcmp(name, "nnode_config_get_int") == 0) {
+        return (uintptr_t)nnode_config_get_int;
+    }
+    if (strcmp(name, "nnode_config_get_bool") == 0) {
+        return (uintptr_t)nnode_config_get_bool;
+    }
+    if (strcmp(name, "nnode_config_get_port") == 0) {
+        return (uintptr_t)nnode_config_get_port;
+    }
+    if (strcmp(name, "nnode_config_get_ip4") == 0) {
+        return (uintptr_t)nnode_config_get_ip4;
+    }
+    if (strcmp(name, "nnode_config_get_mac") == 0) {
+        return (uintptr_t)nnode_config_get_mac;
+    }
+    if (strcmp(name, "nnode_config_get_list") == 0) {
+        return (uintptr_t)nnode_config_get_list;
+    }
     return 0;
+}
+
+/* Per-module config: values live in /data/configs/<pkg>, created and
+ * merged by nnode_schema_ensure before the instance starts. The slot package
+ * is pinned at run time, so getters never scan ELF bytes. */
+
+/* Package of the calling instance. -1 when the caller is not a module
+ * task or the module has no settings. */
+static int current_pkg(char *out, size_t len)
+{
+    int slot = nnode_arena_owner_current();
+    if (slot < 0 || slot >= NNODE_MAX_LOADED || !s_mods[slot].used ||
+        !s_mods[slot].cfg_pkg[0]) {
+        return -1;
+    }
+    snprintf(out, len, "%s", s_mods[slot].cfg_pkg);
+    return 0;
+}
+
+int nnode_config_get(const char *key, char *out, size_t len)
+{
+    char pkg[24];
+    if (!key || !out || len < 2) {
+        return -1;
+    }
+    if (current_pkg(pkg, sizeof(pkg)) != 0) {
+        return -1;
+    }
+    return nnode_schema_lookup(pkg, key, out, len);
+}
+
+long nnode_config_get_int(const char *key, long dflt)
+{
+    char b[32];
+    long v;
+    if (!key || nnode_config_get(key, b, sizeof(b)) != 0 ||
+        nnode_ct_int(b, &v) != 0) {
+        return dflt;
+    }
+    return v;
+}
+
+int nnode_config_get_bool(const char *key, int dflt)
+{
+    char b[8];
+    if (!key || nnode_config_get(key, b, sizeof(b)) != 0) {
+        return dflt;
+    }
+    if (strcmp(b, "1") == 0) {
+        return 1;
+    }
+    if (strcmp(b, "0") == 0) {
+        return 0;
+    }
+    return dflt;
+}
+
+long nnode_config_get_port(const char *key, long dflt)
+{
+    char b[32];
+    long v;
+    if (!key || nnode_config_get(key, b, sizeof(b)) != 0 ||
+        nnode_ct_port(b, &v) != 0) {
+        return dflt;
+    }
+    return v;
+}
+
+int nnode_config_get_ip4(const char *key, char *out, size_t len)
+{
+    char b[32];
+    size_t n;
+    if (!key || !out || len < 2) {
+        return -1;
+    }
+    if (nnode_config_get(key, b, sizeof(b)) != 0 ||
+        nnode_ct_ip4(b, NULL) != 0) {
+        return -1;
+    }
+    n = strlen(b) + 1;
+    if (n > len) {
+        return -1;
+    }
+    memcpy(out, b, n);
+    return 0;
+}
+
+int nnode_config_get_mac(const char *key, char *out, size_t len)
+{
+    char b[32];
+    size_t n;
+    if (!key || !out || len < 2) {
+        return -1;
+    }
+    if (nnode_config_get(key, b, sizeof(b)) != 0 ||
+        nnode_ct_mac(b, NULL) != 0) {
+        return -1;
+    }
+    n = strlen(b) + 1;
+    if (n > len) {
+        return -1;
+    }
+    memcpy(out, b, n);
+    return 0;
+}
+
+/* Flat output: item i goes to out + i * cap. Empty value is 0 items. */
+int nnode_config_get_list(const char *key, char *out, size_t cap, int max)
+{
+    char b[128];
+    const char *p;
+    int n = 0;
+    if (!key || !out || cap < 2 || max < 1) {
+        return -1;
+    }
+    if (nnode_config_get(key, b, sizeof(b)) != 0) {
+        return -1;
+    }
+    if (b[0] == 0) {
+        return 0;
+    }
+    p = b;
+    while (*p) {
+        const char *c = strchr(p, ',');
+        size_t len = c ? (size_t)(c - p) : strlen(p);
+        if (len == 0 || len + 1 > cap || n >= max) {
+            return -1;
+        }
+        memcpy(out + (size_t)n * cap, p, len);
+        out[(size_t)n * cap + len] = 0;
+        n++;
+        p = c ? c + 1 : p + len;
+    }
+    return n;
 }
 
 /* C3 uses the non-mirror loader path (single psegment, sec[] stays empty),
@@ -406,6 +575,11 @@ int nnode_elf_run(const char *name, int *id_out, char *errbuf, size_t errlen)
         snprintf(errbuf, errlen, "not_elf");
         return -1;
     }
+    /* Settings first: a freshly uploaded module may never have been
+     * listed, so its values file may not exist yet. Ensure it here so
+     * the instance reads defaults on its very first run. */
+    char run_pkg[24] = { 0 };
+    nnode_schema_ensure(name, run_pkg, sizeof(run_pkg));
     /* Same file may run several times: each instance gets its own
      * slot with a fresh image (code and data duplicated). */
     size_t exec_free, mem_free;
@@ -435,6 +609,7 @@ int nnode_elf_run(const char *name, int *id_out, char *errbuf, size_t errlen)
     s_mods[slot].used = 1;
     s_mods[slot].id = s_next_id++;
     strncpy(s_mods[slot].name, name, sizeof(s_mods[slot].name) - 1);
+    snprintf(s_mods[slot].cfg_pkg, sizeof(s_mods[slot].cfg_pkg), "%s", run_pkg);
     memset(&f, 0, sizeof(f));
     {
         /* The loader builds FS_PATH/name, so the subdir goes here. */
@@ -466,6 +641,11 @@ int nnode_elf_run(const char *name, int *id_out, char *errbuf, size_t errlen)
         return -1;
     }
     ESP_LOGI(TAG, "running %s", name);
+    /* Image handles go in before the entry runs: module code (nnode_main
+     * and friends) may already query its schema-backed config, which
+     * reads the resident file payload of this slot. */
+    s_mods[slot].file = f;
+    s_mods[slot].elf = elf;
     prev_active = nnode_arena_set_active(slot);
     esp_elf_request(&elf, 0, 0, NULL);
     nnode_arena_set_active(prev_active);
@@ -479,8 +659,6 @@ int nnode_elf_run(const char *name, int *id_out, char *errbuf, size_t errlen)
         return -1;
     }
     ESP_LOGI(TAG, "%s stays loaded (unload explicitly)", name);
-    s_mods[slot].file = f;
-    s_mods[slot].elf = elf;
     measure_images(f.payload, &s_mods[slot].text_size, &s_mods[slot].data_size);
     ESP_LOGI(TAG, "%s#%d: text %u data %u file %u", name, s_mods[slot].id,
         (unsigned)s_mods[slot].text_size, (unsigned)s_mods[slot].data_size,
@@ -593,44 +771,9 @@ int nnode_elf_unload(const char *name)
     return -2;
 }
 
-/* Autostart list: ordered file names, one per config entry section.
- * Order is boot order (first entry starts first). Stored in the same
- * config package format as everything else, so backup picks it up. */
+/* Autostart list: ordered file names in fixed entry1..8 slots.
+ * Order is boot order (first entry starts first). */
 #define NNODE_AUTOSTART_MAX NNODE_MAX_LOADED
-
-typedef struct {
-    char (*names)[65];
-    int cap;
-    int n;
-    int cur;
-} autostart_ctx_t;
-
-static int autostart_section(void *ctx, const char *type, const char *name, int has_name)
-{
-    autostart_ctx_t *c = ctx;
-    (void)name;
-    (void)has_name;
-    c->cur = -1;
-    if (strcmp(type, "entry") == 0 && c->n < c->cap) {
-        c->cur = c->n++;
-        c->names[c->cur][0] = 0;
-    }
-    return 0;
-}
-
-static int autostart_option(void *ctx, const char *key, const char *value)
-{
-    autostart_ctx_t *c = ctx;
-    if (c->cur < 0 || strcmp(key, "name") != 0) {
-        return 0;
-    }
-    if (nnode_file_valid(value)) {
-        snprintf(c->names[c->cur], 65, "%s", value);
-    }
-    return 0;
-}
-
-static const nnode_cfg_cb_t autostart_cb = { autostart_section, autostart_option, NULL };
 
 /* Fixed 65-byte slot copy (memmove: dst and src may overlap). */
 static void autostart_copy(char dst[65], const char src[65])
@@ -640,65 +783,105 @@ static void autostart_copy(char dst[65], const char src[65])
 
 int nnode_autostart_load(char names[][65], int max)
 {
-    autostart_ctx_t c;
+    char key[12], b[128];
     int i, w = 0;
     if (!names || max <= 0) {
         return 0;
     }
-    memset(&c, 0, sizeof(c));
     memset(names, 0, (size_t)max * 65);
-    c.names = names;
-    c.cap = max;
-    c.cur = -1;
-    if (nnode_cfg_parse(NNOODE_CFG_PKG_AUTOSTART, &autostart_cb, &c) != 0) {
-        return 0;
+    if (max > NNODE_AUTOSTART_MAX) {
+        max = NNODE_AUTOSTART_MAX;
     }
-    /* Drop empties and later duplicates, keep first-seen order. */
-    for (i = 0; i < c.n; i++) {
+    for (i = 0; i < NNODE_AUTOSTART_MAX; i++) {
         int j, dup = 0;
-        if (!names[i][0]) {
+        snprintf(key, sizeof(key), "entry%d", i + 1);
+        if (nnode_schema_lookup(NNOODE_CFG_PKG_AUTOSTART, key, b, sizeof(b)) != 0 ||
+            !b[0] || !nnode_file_valid(b)) {
             continue;
         }
         for (j = 0; j < w; j++) {
-            if (strcmp(names[j], names[i]) == 0) {
+            if (strcmp(names[j], b) == 0) {
                 dup = 1;
                 break;
             }
         }
-        if (!dup) {
-            if (w != i) {
-                autostart_copy(names[w], names[i]);
-            }
-            w++;
+        if (dup || w >= max) {
+            continue;
         }
-    }
-    for (i = w; i < max; i++) {
-        names[i][0] = 0;
+        /* file_valid above caps the name at 64 chars: plain copy. */
+        memcpy(names[w], b, strlen(b) + 1);
+        w++;
     }
     return w;
 }
 
+/* Validate an autostart package text (restore path). */
+int nnode_autostart_validate(const char *text)
+{
+    const char *def = nnode_fw_defaults(NNOODE_CFG_PKG_AUTOSTART);
+    /* Heap: restore runs next to 8 KB staged texts. */
+    char (*keys)[NNODE_SCHEMA_ID_MAX + 1] = malloc(sizeof(*keys) * 8);
+    char (*vals)[128] = malloc(sizeof(*vals) * 8);
+    int n = 0, i, rc = -1;
+    char key[12];
+    if (!keys || !vals) {
+        goto out;
+    }
+    if (!text || nnode_schema_validate(def, text) != 0 ||
+        nnode_schema_kv(NNOODE_CFG_PKG_AUTOSTART, text,
+            keys, vals, &n) != 0) {
+        goto out;
+    }
+    for (i = 1; i <= NNODE_AUTOSTART_MAX; i++) {
+        int j;
+        const char *v = NULL;
+        snprintf(key, sizeof(key), "entry%d", i);
+        for (j = 0; j < n; j++) {
+            if (strcmp(keys[j], key) == 0) {
+                v = vals[j];
+                break;
+            }
+        }
+        if (!v || (v[0] && !nnode_file_valid(v))) {
+            goto out;
+        }
+    }
+    rc = 0;
+out:
+    free(keys);
+    free(vals);
+    return rc;
+}
+
 static int autostart_store(char names[][65], int n)
 {
-    char text[1024];
-    char e[140];
-    size_t o = 0;
+    char keys[NNODE_AUTOSTART_MAX][NNODE_SCHEMA_ID_MAX + 1];
+    char vals[NNODE_AUTOSTART_MAX][128];
+    char key[12];
     int i;
-    o += snprintf(text + o, sizeof(text) - o, "package autostart\n");
-    for (i = 0; i < n && o < sizeof(text); i++) {
-        if (!nnode_file_valid(names[i])) {
-            return -1;
-        }
-        if (nnode_cfg_escape(names[i], e, sizeof(e)) != 0) {
-            return -1;
-        }
-        o += snprintf(text + o, sizeof(text) - o,
-            "config entry '%s'\n\toption name '%s'\n", e, e);
-    }
-    if (o >= sizeof(text)) {
+    if (n < 0 || n > NNODE_AUTOSTART_MAX) {
         return -1;
     }
-    return nnode_cfg_write(NNOODE_CFG_PKG_AUTOSTART, text);
+    for (i = 0; i < NNODE_AUTOSTART_MAX; i++) {
+        snprintf(key, sizeof(key), "entry%d", i + 1);
+        memcpy(keys[i], key, strlen(key) + 1);
+        if (i < n) {
+            size_t len;
+            if (!nnode_file_valid(names[i])) {
+                return -1;
+            }
+            len = strlen(names[i]);
+            if (len >= sizeof(vals[i])) {
+                return -1;
+            }
+            memcpy(vals[i], names[i], len + 1);
+        } else {
+            vals[i][0] = 0;
+        }
+    }
+    return nnode_schema_store(
+        nnode_fw_defaults(NNOODE_CFG_PKG_AUTOSTART), keys, vals,
+        NNODE_AUTOSTART_MAX);
 }
 
 int nnode_autostart_json(char *buf, size_t len)

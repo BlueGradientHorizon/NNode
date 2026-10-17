@@ -24,6 +24,31 @@ int nnode_cfg_valid_pkg(const char *pkg)
     return 1;
 }
 
+/* Packages owned by the firmware: loadable modules must not claim them
+ * for their own settings (their declared config name is rejected). */
+int nnode_cfg_reserved(const char *pkg)
+{
+    static const char *const kReserved[] = {
+        NNOODE_CFG_PKG_DEVICE,
+        NNOODE_CFG_PKG_TIME,
+        NNOODE_CFG_PKG_STA,
+        NNOODE_CFG_PKG_NETS,
+        NNOODE_CFG_PKG_AP,
+        NNOODE_CFG_PKG_AUTOSTART,
+        NULL,
+    };
+    int i;
+    if (!pkg) {
+        return 1;
+    }
+    for (i = 0; kReserved[i]; i++) {
+        if (strcmp(pkg, kReserved[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void pkg_path(const char *pkg, char *out, size_t cap, const char *suffix)
 {
     if (suffix) {
@@ -38,6 +63,15 @@ int nnode_cfg_init(void)
     struct stat st;
     memset(&st, 0, sizeof(st));
     if (stat(NNOODE_CFG_DIR, &st) == 0) {
+        return 0;
+    }
+    /* One-time move from the old location: same flat syntax, no
+     * conversion needed. A failed rename falls through to a fresh dir
+     * (missing files heal from defaults on first sight). */
+    memset(&st, 0, sizeof(st));
+    if (stat("/data/config", &st) == 0 &&
+        rename("/data/config", NNOODE_CFG_DIR) == 0) {
+        ESP_LOGI(TAG, "moved /data/config to %s", NNOODE_CFG_DIR);
         return 0;
     }
     if (mkdir(NNOODE_CFG_DIR, 0755) == 0) {
@@ -268,238 +302,4 @@ int nnode_cfg_unescape(const char *in, char *out, size_t cap)
         }
         out[o++] = c;
     }
-}
-
-static int is_token(const char *s, size_t maxlen)
-{
-    size_t n = strlen(s);
-    if (n == 0 || n >= maxlen) {
-        return 0;
-    }
-    while (*s) {
-        char c = *s++;
-        if (!isalnum((unsigned char)c) && c != '_' && c != '-' && c != '.') {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-typedef struct {
-    const char *pkg;
-    const nnode_cfg_cb_t *cb;
-    void *ctx;
-    int lineno;
-    int got_package;
-    int in_section;
-} parse_st_t;
-
-/* Split "word rest..." into first word and pointer to the rest. */
-static const char *next_word(const char *p, char *word, size_t cap)
-{
-    size_t o = 0;
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-    while (*p && *p != ' ' && *p != '\t') {
-        if (o + 1 >= cap) {
-            return NULL;
-        }
-        word[o++] = *p++;
-    }
-    word[o] = 0;
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-    return p;
-}
-
-static int parse_line(parse_st_t *st, char *line)
-{
-    char w[NNOODE_CFG_LINE_MAX];
-    const char *p = line;
-    /* Strip trailing whitespace and newline. */
-    size_t n = strlen(p);
-    while (n > 0 && (p[n - 1] == '\n' || p[n - 1] == '\r' ||
-            p[n - 1] == ' ' || p[n - 1] == '\t')) {
-        n--;
-    }
-    line[n] = 0;
-    p = line;
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-    if (!*p || *p == '#') {
-        return 0;
-    }
-    p = next_word(p, w, sizeof(w));
-    if (!p) {
-        return -1;
-    }
-    if (strcmp(w, "package") == 0) {
-        char name[NNOODE_CFG_PKG_MAX];
-        if (st->got_package) {
-            return -1;
-        }
-        p = next_word(p, name, sizeof(name));
-        if (!p || *p || !nnode_cfg_valid_pkg(name) || strcmp(name, st->pkg) != 0) {
-            return -1;
-        }
-        st->got_package = 1;
-        return 0;
-    }
-    if (!st->got_package) {
-        return -1;
-    }
-    if (strcmp(w, "config") == 0) {
-        char type[NNOODE_CFG_TYPE_MAX], raw[NNOODE_CFG_LINE_MAX];
-        char name[NNOODE_CFG_NAME_MAX];
-        int has_name = 0;
-        const char *r;
-        p = next_word(p, type, sizeof(type));
-        if (!p || !is_token(type, sizeof(type))) {
-            return -1;
-        }
-        r = p;
-        if (*r) {
-            /* Optional section name: rest of line is one value token. */
-            if (strlen(r) >= sizeof(raw)) {
-                return -1;
-            }
-            strcpy(raw, r);
-            if (nnode_cfg_unescape(raw, name, sizeof(name)) != 0 ||
-                !is_token(name, sizeof(name))) {
-                return -1;
-            }
-            has_name = 1;
-        }
-        st->in_section = 1;
-        if (st->cb && st->cb->section) {
-            return st->cb->section(st->ctx, type, has_name ? name : "", has_name);
-        }
-        return 0;
-    }
-    if (strcmp(w, "option") == 0 || strcmp(w, "list") == 0) {
-        int is_list = strcmp(w, "list") == 0;
-        char key[NNOODE_CFG_KEY_MAX], val[NNOODE_CFG_VAL_MAX];
-        char raw[NNOODE_CFG_LINE_MAX];
-        const char *sp;
-        if (!st->in_section) {
-            return -1;
-        }
-        p = next_word(p, key, sizeof(key));
-        if (!p || !*p || !is_token(key, sizeof(key))) {
-            return -1;
-        }
-        /* Value is the rest of the line (may contain spaces in quotes). */
-        sp = p;
-        while (*sp == ' ' || *sp == '\t') {
-            sp++;
-        }
-        if (!*sp || strlen(sp) >= sizeof(raw)) {
-            return -1;
-        }
-        strcpy(raw, sp);
-        /* Trim trailing spaces outside quotes: find last non-space and
-         * check it is a quote or bare token char. Simpler: rstrip then
-         * unescape must consume everything. */
-        {
-            size_t m = strlen(raw);
-            while (m > 0 && (raw[m - 1] == ' ' || raw[m - 1] == '\t')) {
-                raw[--m] = 0;
-            }
-        }
-        if (nnode_cfg_unescape(raw, val, sizeof(val)) != 0) {
-            return -1;
-        }
-        if (is_list) {
-            if (st->cb && st->cb->list) {
-                return st->cb->list(st->ctx, key, val);
-            }
-        } else {
-            if (st->cb && st->cb->option) {
-                return st->cb->option(st->ctx, key, val);
-            }
-        }
-        return 0;
-    }
-    return -1;
-}
-
-static int parse_stream(FILE *f, parse_st_t *st)
-{
-    char line[NNOODE_CFG_LINE_MAX + 2];
-    st->lineno = 0;
-    while (fgets(line, sizeof(line), f)) {
-        st->lineno++;
-        /* Overlong line: buffer filled without newline. */
-        if (!strchr(line, '\n') && !feof(f)) {
-            return -1;
-        }
-        if (parse_line(st, line) != 0) {
-            ESP_LOGW(TAG, "parse %s line %d failed", st->pkg, st->lineno);
-            return -1;
-        }
-    }
-    if (ferror(f)) {
-        return -1;
-    }
-    return st->got_package ? 0 : -1;
-}
-
-int nnode_cfg_parse(const char *pkg, const nnode_cfg_cb_t *cb, void *ctx)
-{
-    char path[64];
-    FILE *f;
-    parse_st_t st;
-    int rc;
-    if (!nnode_cfg_valid_pkg(pkg)) {
-        return -1;
-    }
-    pkg_path(pkg, path, sizeof(path), NULL);
-    f = fopen(path, "r");
-    if (!f) {
-        return -1;
-    }
-    memset(&st, 0, sizeof(st));
-    st.pkg = pkg;
-    st.cb = cb;
-    st.ctx = ctx;
-    rc = parse_stream(f, &st);
-    fclose(f);
-    return rc;
-}
-
-int nnode_cfg_parse_text(const char *pkg, const char *text,
-    const nnode_cfg_cb_t *cb, void *ctx)
-{
-    parse_st_t st;
-    const char *p;
-    if (!nnode_cfg_valid_pkg(pkg) || !text) {
-        return -1;
-    }
-    memset(&st, 0, sizeof(st));
-    st.pkg = pkg;
-    st.cb = cb;
-    st.ctx = ctx;
-    p = text;
-    while (*p) {
-        char line[NNOODE_CFG_LINE_MAX + 2];
-        size_t o = 0;
-        while (*p && *p != '\n' && o + 1 < sizeof(line)) {
-            line[o++] = *p++;
-        }
-        if (*p && *p != '\n') {
-            return -1;
-        }
-        if (*p == '\n') {
-            line[o++] = *p++;
-        }
-        line[o] = 0;
-        st.lineno++;
-        if (parse_line(&st, line) != 0) {
-            return -1;
-        }
-    }
-    return st.got_package ? 0 : -1;
 }

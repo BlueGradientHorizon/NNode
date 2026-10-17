@@ -173,11 +173,15 @@ table.g-stats td { border-bottom: 1px solid var(--border-soft);
 .frm { display: flex; flex-direction: column; width: 100%;
   max-width: 980px; margin-top: 8px; }
 .frm-row { display: flex; align-items: flex-start; }
+/* Explicit display beats the hidden attribute: restate it,
+ * same as the overlay rules below. */
+.frm[hidden], .frm-row[hidden] { display: none; }
 .frm-row > .flab { flex: 0 0 180px; text-align: right;
   padding: 10px 12px 6px 0; }
 .frm-row > .fval { flex: 1; min-width: 0; text-align: left;
   padding: 6px 10px 6px 0; }
 .frm-row > .fval p { margin: 4px 0; }
+.fhint { font-size: 12px; opacity: 0.65; margin-top: 2px; }
 @media (max-width: 560px) {
   .frm-row { flex-direction: column; }
   .frm-row > .flab { flex-basis: auto; text-align: left;

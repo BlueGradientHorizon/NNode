@@ -1,4 +1,4 @@
-/* NNode backup in CBOR. Schema v2 (int keys, definite lengths only):
+/* NNode backup in CBOR. Schema (int keys, definite lengths only):
  *
  * map {
  *   0: uint version (=2),
@@ -30,6 +30,7 @@
 #include "esp_task_wdt.h"
 #include "cbor.h"
 #include "cfg.h"
+#include "cfg_schema.h"
 #include "files.h"
 #include "fs.h"
 #include "nets.h"
@@ -79,7 +80,7 @@ static int walk_count(const char *rel, int depth, int *n)
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) {
             continue;
         }
-        if (!rel[0] && strcmp(e->d_name, "config") == 0) {
+        if (!rel[0] && strcmp(e->d_name, "configs") == 0) {
             continue;
         }
         join_rel(rel, e->d_name, child, sizeof(child));
@@ -167,7 +168,7 @@ static int walk_emit(cbor_w_t *w, const char *rel, int depth)
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) {
             continue;
         }
-        if (!rel[0] && strcmp(e->d_name, "config") == 0) {
+        if (!rel[0] && strcmp(e->d_name, "configs") == 0) {
             continue;
         }
         join_rel(rel, e->d_name, child, sizeof(child));
@@ -287,8 +288,9 @@ int nnode_backup_emit(cbor_emit_fn emit, void *ctx)
     return w.failed ? -1 : 0;
 }
 
-/* Typed validation for the known packages. Unknown packages only get
- * a syntax check: there are no rules to check them against. */
+/* Typed validation for the firmware packages. Module packages get a
+ * syntax check only: the schema lives in the ELF, full typed validation
+ * runs at the next ensure. */
 static int config_valid(const char *pkg, const char *text)
 {
     if (!nnode_cfg_valid_pkg(pkg) || !text) {
@@ -303,10 +305,16 @@ static int config_valid(const char *pkg, const char *text)
     if (strcmp(pkg, NNOODE_CFG_PKG_STA) == 0) {
         return nnode_sta_validate(text);
     }
+    if (strcmp(pkg, NNOODE_CFG_PKG_NETS) == 0) {
+        return nnode_nets_validate(text);
+    }
     if (strcmp(pkg, NNOODE_CFG_PKG_AP) == 0) {
         return nnode_ap_validate(text);
     }
-    return nnode_cfg_parse_text(pkg, text, NULL, NULL);
+    if (strcmp(pkg, NNOODE_CFG_PKG_AUTOSTART) == 0) {
+        return nnode_autostart_validate(text);
+    }
+    return nnode_schema_syntax_ok(pkg, text);
 }
 
 static int wipe_tree(const char *base, int depth)
@@ -356,7 +364,7 @@ static int wipe_data_files(void)
         char path[256];
         struct stat st;
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0 ||
-            strcmp(e->d_name, "config") == 0) {
+            strcmp(e->d_name, "configs") == 0) {
             continue;
         }
         snprintf(path, sizeof(path), "/data/%.64s", e->d_name);
@@ -456,10 +464,11 @@ int nnode_backup_restore_stream(cbor_read_fn read, void *ctx, int total_len,
              * after every one of them validates. Unknown packages
              * have no rules beyond syntax and go straight to disk. */
             uint64_t np, k;
-            char *staged[4] = { NULL, NULL, NULL, NULL };
-            const char *known[4] = {
+            char *staged[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+            const char *known[6] = {
                 NNOODE_CFG_PKG_DEVICE, NNOODE_CFG_PKG_TIME,
-                NNOODE_CFG_PKG_STA, NNOODE_CFG_PKG_AP,
+                NNOODE_CFG_PKG_STA, NNOODE_CFG_PKG_NETS,
+                NNOODE_CFG_PKG_AP, NNOODE_CFG_PKG_AUTOSTART,
             };
             int ki, bad = 0;
             if (cbor_r_head(&r, &major, &np) || major != 5 || np > 16) {
@@ -484,12 +493,12 @@ int nnode_backup_restore_stream(cbor_read_fn read, void *ctx, int total_len,
                     bad = 1;
                     break;
                 }
-                for (ki = 0; ki < 4; ki++) {
+                for (ki = 0; ki < 6; ki++) {
                     if (strcmp(pkg, known[ki]) == 0) {
                         break;
                     }
                 }
-                if (ki < 4) {
+                if (ki < 6) {
                     free(staged[ki]);
                     staged[ki] = text;
                 } else {
@@ -502,15 +511,15 @@ int nnode_backup_restore_stream(cbor_read_fn read, void *ctx, int total_len,
                 }
             }
             if (bad) {
-                for (ki = 0; ki < 4; ki++) {
+                for (ki = 0; ki < 6; ki++) {
                     free(staged[ki]);
                 }
                 BK_FAIL("config");
             }
-            for (ki = 0; ki < 4; ki++) {
+            for (ki = 0; ki < 6; ki++) {
                 if (staged[ki]) {
                     if (nnode_cfg_write(known[ki], staged[ki]) != 0) {
-                        for (ki = 0; ki < 4; ki++) {
+                        for (ki = 0; ki < 6; ki++) {
                             free(staged[ki]);
                         }
                         BK_FAIL("config");
@@ -548,12 +557,12 @@ int nnode_backup_restore_stream(cbor_read_fn read, void *ctx, int total_len,
                         BK_FAIL("files");
                     }
                     if (fk == 0) {
-                        /* Package texts own the config dir; plain file
+                        /* Package texts own the configs dir; plain file
                          * entries must not touch it. */
                         if (cbor_r_tstr(&r, name, sizeof(name)) ||
                             !nnode_path_valid(name) ||
-                            (strncmp(name, "config", 6) == 0 &&
-                            (name[6] == 0 || name[6] == '/'))) {
+                            (strncmp(name, "configs", 7) == 0 &&
+                            (name[7] == 0 || name[7] == '/'))) {
                             BK_FAIL("files");
                         }
                         got_name = 1;

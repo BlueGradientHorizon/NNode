@@ -58,6 +58,36 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def check_defaults(src):
+    """Fail fast on a bad config.defaults (full check in tools/)."""
+    defaults = os.path.join(src, "config.defaults")
+    if not os.path.isfile(defaults):
+        print("no config.defaults: module has no settings")
+        return None
+    val = os.path.join(ROOT, "tools", "nnode_cfg_validate.py")
+    r = subprocess.run([sys.executable, val, defaults])
+    if r.returncode != 0:
+        sys.exit("config.defaults invalid, fix it first")
+    return defaults
+
+
+def embed_defaults(defaults, elf):
+    """Inject config.defaults verbatim as the .nnode_default section."""
+    if not defaults:
+        return
+    objcopy = shutil.which("riscv32-esp-elf-objcopy") or \
+        shutil.which("xtensa-esp-elf-objcopy")
+    if not objcopy:
+        sys.exit("objcopy not on PATH (IDF env missing?)")
+    # Incremental builds relink only on change, so the section may
+    # already be there from the previous run: drop it first.
+    subprocess.run([objcopy, "--remove-section", ".nnode_default", elf],
+                   capture_output=True)
+    run([objcopy, "--add-section", ".nnode_default=%s" % defaults,
+         "--set-section-flags", ".nnode_default=readonly,data", elf])
+    print("embedded %s as .nnode_default" % defaults)
+
+
 def api(ip, method, path, data=None):
     """POST/GET the board API. Returns the response body as text."""
     url = f"http://{ip}{path}"
@@ -114,6 +144,8 @@ def main():
         shutil.rmtree(out, ignore_errors=True)
         return
 
+    defaults = check_defaults(src)
+
     # Reuse the loader component from the root managed_components.
     extra_loader = " ".join([
         os.path.join(ROOT, "managed_components", "elf_loader"),
@@ -159,6 +191,7 @@ def main():
 
     idf_mod("build")
     elf = os.path.join(out, f"{app}.app.elf")
+    embed_defaults(defaults, elf)
     print(f"{os.path.getsize(elf)} bytes: {elf}")
 
     if action in ("upload", "upload-run"):
