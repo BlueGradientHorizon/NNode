@@ -10,11 +10,11 @@
 #include "esp_partition.h"
 #include "esp_mac.h"
 #include "esp_flash.h"
-#include "driver/temperature_sensor.h"
 #include "wifi.h"
 #include "fs.h"
 #include "syscfg.h"
 #include "api.h"
+#include "bsp.h"
 
 int nnode_api_summary(char *buf, size_t len)
 {
@@ -38,12 +38,12 @@ int nnode_api_summary(char *buf, size_t len)
     hfree = (uint32_t)mi.total_free_bytes;
     htotal = (uint32_t)(mi.total_allocated_bytes + mi.total_free_bytes);
     return snprintf(buf, len,
-        "{\"sysname\":\"ESP-IDF\",\"release\":\"%s\",\"machine\":\"esp32c3\","
+        "{\"sysname\":\"ESP-IDF\",\"release\":\"%s\",\"machine\":\"%s\","
         "\"uptime\":%lld,\"ip\":\"%s\","
         "\"mem_used\":%u,\"mem_free\":%u,"
         "\"largest\":%u,\"min\":%u,\"ablocks\":%u,\"fblocks\":%u,"
         "\"fs_blocks\":%llu,\"fs_bfree\":%llu,\"fs_bsize\":1}",
-        idf,
+        idf, bsp_machine(),
         (long long)(esp_timer_get_time() / 1000000),
         ip, (unsigned)(htotal - hfree), (unsigned)hfree,
         (unsigned)mi.largest_free_block, (unsigned)mi.minimum_free_bytes,
@@ -51,26 +51,9 @@ int nnode_api_summary(char *buf, size_t len)
         (unsigned long long)fst, (unsigned long long)(fst - fsu));
 }
 
-static temperature_sensor_handle_t s_ts;
-static int s_ts_state; /* 0=untried 1=ok -1=dead */
-
 static float nnode_temp(void)
 {
-    if (s_ts_state == 0) {
-        s_ts_state = -1;
-        temperature_sensor_config_t c = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
-        if (temperature_sensor_install(&c, &s_ts) == ESP_OK &&
-            temperature_sensor_enable(s_ts) == ESP_OK) {
-            s_ts_state = 1;
-        }
-    }
-    if (s_ts_state == 1) {
-        float t = 0;
-        if (temperature_sensor_get_celsius(s_ts, &t) == ESP_OK) {
-            return t;
-        }
-    }
-    return 0;
+    return bsp_temp_celsius();
 }
 
 int nnode_api_sys(char *buf, size_t len)
@@ -81,7 +64,7 @@ int nnode_api_sys(char *buf, size_t len)
     char idf[16];
     esp_chip_info_t ci;
     const esp_app_desc_t *app;
-    const char *model, *arch, *reset;
+    const char *reset;
     uint32_t flash_size = 0;
     uint8_t m[6];
     size_t n;
@@ -89,6 +72,8 @@ int nnode_api_sys(char *buf, size_t len)
     int first = 1;
     struct timeval tv;
     uint64_t fst = 0, fsu = 0;
+    const char *model = bsp_model();
+    const char *arch = bsp_arch();
     nnode_net_ip(ip, sizeof(ip));
     esp_chip_info(&ci);
     app = esp_app_get_description();
@@ -101,16 +86,6 @@ int nnode_api_sys(char *buf, size_t len)
     } else {
         snprintf(idf, sizeof(idf), "%d.%d.%d",
             ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH);
-    }
-    switch (ci.model) {
-    case CHIP_ESP32: model = "ESP32"; arch = "Xtensa LX6"; break;
-    case CHIP_ESP32S2: model = "ESP32-S2"; arch = "Xtensa LX7"; break;
-    case CHIP_ESP32S3: model = "ESP32-S3"; arch = "Xtensa LX7"; break;
-    case CHIP_ESP32C3: model = "ESP32-C3"; arch = "RISC-V RV32IMC"; break;
-    case CHIP_ESP32C2: model = "ESP32-C2"; arch = "RISC-V RV32IMC"; break;
-    case CHIP_ESP32C6: model = "ESP32-C6"; arch = "RISC-V RV32IMC"; break;
-    case CHIP_ESP32H2: model = "ESP32-H2"; arch = "RISC-V RV32IMC"; break;
-    default: model = "?"; arch = "?"; break;
     }
     if (esp_read_mac(m, ESP_MAC_BASE) == ESP_OK) {
         snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",

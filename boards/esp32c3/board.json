@@ -1,0 +1,16 @@
+{
+  "target": "esp32c3",
+  "arch": "riscv",
+  "toolchain_prefix": "riscv32-esp-elf",
+  "flash_mb": 4,
+  "single_core": true,
+  "has_temp_sensor": true,
+  "machine": "esp32c3",
+  "model": "ESP32-C3",
+  "cpu_arch": "RISC-V RV32IMC",
+  "led_gpio_default": 8,
+  "led_active_low": true,
+  "gpio_valid_ranges": [[0, 10], [18, 21]],
+  "gpio_reserved_comment": "11..17 belong to SPI flash on this board",
+  "partitions": "partitions.csv"
+}

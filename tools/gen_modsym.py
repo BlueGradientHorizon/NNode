@@ -47,8 +47,9 @@ if len(baseline) != len(set(baseline)):
     print("MISMATCH duplicate names in baseline", file=sys.stderr)
     sys.exit(1)
 
-# Verified against nm over all C3 archives (13737 unique symbols) and
-# libfreertos.a (229 defined symbols). Families below, in table order.
+# Verified against nm over all target archives (example: 13737 unique symbols
+# on esp32c3) and libfreertos.a (229 defined symbols on esp32c3).
+# Families below, in table order. Regenerate per target when adding a board.
 
 LIBC = {"fopen", "fclose", "fread", "fseek", "ftell", "rename", "unlink"}
 

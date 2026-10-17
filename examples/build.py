@@ -71,11 +71,21 @@ def check_defaults(src):
     return defaults
 
 
-def embed_defaults(defaults, elf):
+def embed_defaults(defaults, elf, target):
     """Inject config.defaults verbatim as the .nnode_default section."""
     if not defaults:
         return
-    objcopy = shutil.which("riscv32-esp-elf-objcopy") or \
+    objcopy = None
+    # Board metadata wins when present, probe is the fallback.
+    board_json = os.path.join(ROOT, "boards", target, "board.json")
+    try:
+        with open(board_json, encoding="utf-8") as f:
+            prefix = json.load(f).get("toolchain_prefix")
+        if prefix:
+            objcopy = shutil.which(prefix + "-objcopy")
+    except (OSError, ValueError):
+        objcopy = None
+    objcopy = objcopy or shutil.which("riscv32-esp-elf-objcopy") or \
         shutil.which("xtensa-esp-elf-objcopy")
     if not objcopy:
         sys.exit("objcopy not on PATH (IDF env missing?)")
@@ -155,13 +165,15 @@ def main():
     def idf_extra(*a):
         run(["idf.py", "-C", src, "-B", out,
              "-D", f"SDKCONFIG={os.path.join(ROOT, out, 'sdkconfig')}",
-             "-D", f"EXTRA_COMPONENT_DIRS={extra_loader}", *a])
+             "-D", f"EXTRA_COMPONENT_DIRS={extra_loader}",
+             "-D", f"BOARD_DIR={os.path.join(ROOT, board_dir)}", *a])
 
     def idf_mod(*a):
         run(["idf.py", "-C", src, "-B", out,
              "-D", f"SDKCONFIG={os.path.join(ROOT, out, 'sdkconfig')}",
              "-D", f"SDKCONFIG_DEFAULTS={module_defaults}",
-             "-D", f"EXTRA_COMPONENT_DIRS={extra_loader}", *a])
+             "-D", f"EXTRA_COMPONENT_DIRS={extra_loader}",
+             "-D", f"BOARD_DIR={os.path.join(ROOT, board_dir)}", *a])
 
     if not os.path.isfile(os.path.join(out, "sdkconfig")):
         # Fresh configure in two steps: set-target refuses to fullclean a
@@ -191,7 +203,7 @@ def main():
 
     idf_mod("build")
     elf = os.path.join(out, f"{app}.app.elf")
-    embed_defaults(defaults, elf)
+    embed_defaults(defaults, elf, target)
     print(f"{os.path.getsize(elf)} bytes: {elf}")
 
     if action in ("upload", "upload-run"):

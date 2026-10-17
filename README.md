@@ -66,6 +66,13 @@ generated `sdkconfig`); shared Kconfig defaults stay in the root
 automatically and writes a fresh `boards/<target>/sdkconfig` from
 the defaults.
 
+## Versioning
+
+The panel shows `<version> <commit>` (plus `-dirty` on uncommitted
+changes, e.g. `0.1.0 c6550a9-dirty`). The base version lives in `VERSION`,
+`build.py` appends the current git hash on every run and passes the result
+as `PROJECT_VER`. Bump `VERSION` to cut a release.
+
 ## How it works
 
 ### Frontend

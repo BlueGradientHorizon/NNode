@@ -4,7 +4,7 @@ version 3
 #@tab sanitize Sanitize
 #@field mode enum vals=blink,on,off label="Mode" tab=main
 mode blink
-#@field gpio int min=0 max=21 label="LED GPIO" tab=main
+#@field gpio int min=0 max=48 label="LED GPIO" tab=main
 gpio 8
 #@field on_ms int min=10 max=60000 label="On time, ms" tab=main show_if="mode==blink"
 on_ms 500

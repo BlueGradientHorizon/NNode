@@ -501,7 +501,7 @@ int nnode_config_get_list(const char *key, char *out, size_t cap, int max)
     return n;
 }
 
-/* C3 uses the non-mirror loader path (single psegment, sec[] stays empty),
+/* Some targets use the non-mirror loader path (single psegment, sec[] stays empty),
  * so measure the images from the program headers of the resident payload:
  * executable segments go to IRAM, the rest to DRAM. */
 static void measure_images(const uint8_t *payload, size_t *text, size_t *data)

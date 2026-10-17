@@ -1,9 +1,33 @@
 /* Page logic, see manifest.json for bundle order. */
+  var REPO_URL = "https://github.com/BlueGradientHorizon/nnode";
+
+  /* Footer shows "NNode <version> <hash> / IDF <idf>" with the hash
+   * linked to the project repository. fw versions predate the
+   * "<version> <hash>" format, so a hash-less value renders as plain text. */
+  function renderFooter(j) {
+    var el = document.getElementById("foot-ver");
+    var fw = j.fw || "?";
+    var cut = fw.indexOf(" ");
+    var ver = cut < 0 ? fw : fw.slice(0, cut);
+    var hash = cut < 0 ? "" : fw.slice(cut + 1);
+    el.innerHTML = "";
+    el.appendChild(document.createTextNode("NNode " + ver + " "));
+    if (hash) {
+      var a = document.createElement("a");
+      a.href = REPO_URL;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = hash;
+      el.appendChild(a);
+      el.appendChild(document.createTextNode(" "));
+    }
+    el.appendChild(document.createTextNode(" / IDF " + j.idf));
+  }
+
   function renderSys(j) {
     lastSys = j;
     renderOverview();
-    document.getElementById("foot-ver").textContent =
-      "NNode " + j.fw + " / IDF " + j.idf;
+    renderFooter(j);
     document.getElementById("sys-time").textContent = fmtDateTime(j.time);
     var total = 0, i;
     for (i = 0; i < j.partitions.length; i++) total += j.partitions[i].size;

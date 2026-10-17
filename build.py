@@ -57,6 +57,32 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def project_version():
+    """Compose '<version> <short-hash>[-dirty]' for the app descriptor.
+
+    The base version comes from the VERSION file (first token). The hash
+    is fresh HEAD on every build, with -dirty when the tree has changes.
+    Falls back to the bare version when git is unavailable.
+    """
+    try:
+        with open("VERSION", encoding="utf-8") as f:
+            ver = f.read().strip().split()[0]
+    except (OSError, IndexError):
+        ver = "0.0.0"
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return f"{ver} {head}{'-dirty' if dirty else ''}"
+    except (OSError, subprocess.CalledProcessError):
+        return ver
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build/flash the nnode firmware.")
     ap.add_argument("target", help="board in boards/<target>/ (e.g. esp32c3)")
@@ -78,10 +104,16 @@ def main():
     if not os.path.isdir(board_dir):
         sys.exit(f"unknown target '{args.target}' (no {board_dir} directory)")
 
+    # Fresh on every build: -DPROJECT_VER wins over IDF's own sources
+    # (version.txt, project() VERSION, git describe), so the app
+    # descriptor always carries the current commit.
+    version = project_version()
+
     def idf(*a):
         run(["idf.py", "-B", build_dir,
              "-D", f"SDKCONFIG={sdkconfig}",
-             "-D", f"SDKCONFIG_DEFAULTS={defaults}", *a])
+             "-D", f"SDKCONFIG_DEFAULTS={defaults}",
+             "-D", f"PROJECT_VER={version}", *a])
 
     if args.action in ("build", "flash"):
         run(["python3", "tools/web_inline.py"])

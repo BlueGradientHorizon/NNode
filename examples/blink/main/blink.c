@@ -1,6 +1,9 @@
-/* NNode ELF module example: blinker for ESP32-C3.
+/* NNode ELF module example: blinker.
+ * Board constants (default LED GPIO, LED polarity, valid GPIO ranges)
+ * come from board_config.h, supplied via BOARD_DIR by ../build.py,
+ * so the example follows whichever board it is built for.
  *
- * Build: ../build.py esp32c3 build blink  ->
+ * Build: ../build.py <target> build blink  ->
  *   build-<target>/modules/blink/blink.app.elf
  * Upload:  POST /api/files/upload?name=blink.elf  (raw .app.elf bytes)
  * Run:     POST /api/elf/run?name=blink.elf
@@ -28,9 +31,9 @@
  * esp_log_write is not exported. Note: printf goes to UART only, it does
  * not land in /api/log (that buffer captures esp_log output).
  *
- * LED: GPIO8 is the onboard LED on the ESP32-C3 Super Mini, active-low
- * (0 lights it). Plain toggling only blinks boards with a plain LED;
- * RGB revisions wire GPIO8 to WS2812 data-in, there the log counter
+ * LED: the default GPIO and its active level come from board_config.h
+ * (BOARD_LED_GPIO_DEFAULT, BOARD_LED_ACTIVE_LOW). Plain toggling only
+ * blinks boards with a plain LED; on RGB revisions the log counter
  * proves execution instead.
  */
 #include <stdio.h>
@@ -39,39 +42,31 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "nnode_sdk.h"
-
-/* Onboard LED is active-low: 0 is lit, 1 is dark. */
-#define LED_ON 0
-#define LED_OFF 1
-#define LED_GPIO_DEFAULT 8
+#include "board_config.h"
 
 static volatile unsigned g_count;
-static volatile int g_gpio = LED_GPIO_DEFAULT;
+static volatile int g_gpio = BOARD_LED_GPIO_DEFAULT;
 static volatile int g_on_ms = 500;
 static volatile int g_off_ms = 500;
 static volatile int g_invert;
 static volatile int g_mode; /* 0 blink, 1 always on, 2 always off */
 static volatile int g_on_stop; /* 0 enable, 1 disable, 2 nothing */
 
-/* ESP32-C3 user GPIOs: 0..10, 18..21 (11..17 belong to SPI flash). */
-static int gpio_ok(int g)
-{
-    return (g >= 0 && g <= 10) || (g >= 18 && g <= 21);
-}
-
 static void led_on(void)
 {
-    gpio_set_level(g_gpio, LED_ON);
+    gpio_set_level(g_gpio, BOARD_LED_ACTIVE_LOW ? 0 : 1);
 }
 
 static void led_off(void)
 {
-    gpio_set_level(g_gpio, LED_OFF);
+    gpio_set_level(g_gpio, BOARD_LED_ACTIVE_LOW ? 1 : 0);
 }
 
 static void blink_task(void *arg)
 {
-    int level = LED_ON;
+    const int on = BOARD_LED_ACTIVE_LOW ? 0 : 1;
+    const int off = BOARD_LED_ACTIVE_LOW ? 1 : 0;
+    int level = on;
     (void)arg;
     if (g_mode == 1) {
         led_on();
@@ -85,15 +80,15 @@ static void blink_task(void *arg)
             continue;
         }
         out = level;
-        level = (level == LED_ON) ? LED_OFF : LED_ON;
+        level = (level == on) ? off : on;
         if (g_invert) {
             out = !out;
         }
         gpio_set_level(g_gpio, out);
         printf("blink %u: %s\n", g_count++,
-            out == LED_ON ? "on" : "off");
+            out == on ? "on" : "off");
         vTaskDelay(pdMS_TO_TICKS(
-            out == LED_ON ? g_on_ms : g_off_ms));
+            out == on ? g_on_ms : g_off_ms));
     }
     printf("blink: worker exiting\n");
     vTaskDelete(NULL);
@@ -114,8 +109,8 @@ int nnode_main(int argc, char *argv[])
             g_mode = 2;
         }
     }
-    v = nnode_config_get_int("gpio", LED_GPIO_DEFAULT);
-    if (v >= 0 && v <= 21 && gpio_ok((int)v)) {
+    v = nnode_config_get_int("gpio", BOARD_LED_GPIO_DEFAULT);
+    if (v >= 0 && board_gpio_valid((int)v)) {
         g_gpio = (int)v;
     }
     g_on_stop = 1;
@@ -143,7 +138,7 @@ int nnode_main(int argc, char *argv[])
     }
     gpio_reset_pin(g_gpio);
     gpio_set_direction(g_gpio, GPIO_MODE_OUTPUT);
-    gpio_set_level(g_gpio, LED_OFF);
+    led_off();
     if (xTaskCreatePinnedToCore(blink_task, "blink", 2048, NULL, 5,
             NULL, tskNO_AFFINITY) != pdPASS) {
         printf("blink: task create failed\n");
