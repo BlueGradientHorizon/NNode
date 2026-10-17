@@ -57,30 +57,56 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 
+def git_sha():
+    """Short HEAD hash, or None when git cannot tell.
+
+    CI checkouts (shallow, container, dubious ownership) often fail
+    here even though the commit is known to the runner.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out or None
+
+
+def ci_sha():
+    """Commit hash from the CI environment, for checkouts git cannot read."""
+    sha = os.environ.get("GITHUB_SHA", "").strip()
+    return sha[:7] if sha else None
+
+
+def git_dirty():
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return bool(out)
+
+
 def project_version():
     """Compose '<version> <short-hash>[-dirty]' for the app descriptor.
 
     The base version comes from the VERSION file (first token). The hash
     is fresh HEAD on every build, with -dirty when the tree has changes.
-    Falls back to the bare version when git is unavailable.
+    Falls back to the CI commit, then to the bare version, when git is
+    unavailable.
     """
     try:
         with open("VERSION", encoding="utf-8") as f:
             ver = f.read().strip().split()[0]
     except (OSError, IndexError):
         ver = "0.0.0"
-    try:
-        head = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        return f"{ver} {head}{'-dirty' if dirty else ''}"
-    except (OSError, subprocess.CalledProcessError):
+    sha = git_sha() or ci_sha()
+    if not sha:
         return ver
+    return f"{ver} {sha}{'-dirty' if git_dirty() else ''}"
 
 
 def main():
@@ -108,6 +134,7 @@ def main():
     # (version.txt, project() VERSION, git describe), so the app
     # descriptor always carries the current commit.
     version = project_version()
+    print(f"nnode version: {version}", flush=True)
 
     def idf(*a):
         run(["idf.py", "-B", build_dir,
