@@ -1,37 +1,55 @@
 #!/usr/bin/env python3
 """Bundle the NNode web UI into a single self-contained HTML file.
 
-Pipeline:
-  ../src_web/index.html + ../src_web/*.css + ../src_web/*.js
-    -> inline local <link rel="stylesheet"> and <script src> references
-       (contents minified with rcssmin / rjsmin)
-    -> validate that every route from the SECTIONS table in app.js
-       resolves to a <section> id in the markup
-    -> drop comments and whitespace-only text nodes
-    -> ../src_web/inlined/index.html (handy for layout checks
-       in a desktop browser)
-    -> ../main/page/index.html.gz (gzip -9, deterministic;
-       the copy baked into the firmware)
+Pipeline (manifest mode):
+  src_web/index.html (shell with <!-- @include <page> --> directives)
+    + src_web/<sec>/<page>/<page>.html partials
+    + src_web/*.js and src_web/<sec>/**/*.js in manifest order
+  -> expand includes
+  -> inline local <link rel="stylesheet"> and <script src> references
+     (contents minified with rcssmin / rjsmin, JS combined into one
+     <script> wrapped in a single IIFE so fragments share closure scope)
+  -> validate that every route from the SECTIONS table in routes_from
+     resolves to a <section> id in the markup
+  -> drop comments and whitespace-only text nodes
+  -> ../src_web/inlined/index.html (handy for layout checks
+     in a desktop browser)
+  -> ../main/page/index.html.gz (gzip -9, deterministic;
+     the copy baked into the firmware)
+
+Legacy mode (no src_web/manifest.json): old flat layout with
+  index.html + style.css + i18n.js + app.js, one <script> per file,
+  routes scanned from app.js. Kept so the rewrite can land incrementally.
 
 Only the .gz file is baked into the firmware (see EMBED_FILES in
 main/CMakeLists.txt) and served with Content-Encoding: gzip.
 
-Parsing is done with html.parser plus a small hand-written scanner for the
-route table. No regular expressions are used on purpose: the previous
-regex-based builder broke silently on multiline tags and on ">" characters
-inside quoted attribute values.
+Parsing is done with html.parser plus a small route scanner in
+web_routes.py. No regular expressions are used for HTML on purpose:
+the previous regex-based builder broke silently on multiline tags and
+on ">" characters inside quoted attribute values. Includes use plain
+string search for the same reason.
 
 Dependencies: pip install rjsmin rcssmin
 """
+import argparse
 import gzip
+import json
 import os
 import sys
 from html.parser import HTMLParser
+
+try:
+    from web_routes import find_routes
+except ImportError:  # allow `python3 tools/web_inline.py` from any cwd
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from web_routes import find_routes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_SRC = os.path.normpath(os.path.join(HERE, "..", "src_web"))
 HTML_OUT_DIR = os.path.join(WEB_SRC, "inlined")
 PAGE_DIR = os.path.normpath(os.path.join(HERE, "..", "main", "page"))
+MANIFEST = os.path.join(WEB_SRC, "manifest.json")
 
 VOID_ELEMENTS = frozenset([
     "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -39,6 +57,9 @@ VOID_ELEMENTS = frozenset([
 ])
 # Elements whose text must be copied verbatim, never whitespace-folded.
 RAW_TEXT_ELEMENTS = frozenset(["script", "style", "pre", "textarea"])
+
+INCLUDE_OPEN = "<!-- @include"
+INCLUDE_CLOSE = "-->"
 
 
 def fail(msg):
@@ -53,7 +74,9 @@ def read_src(name):
         return f.read()
 
 
-def minify_css(text):
+def minify_css(text, dev=False):
+    if dev:
+        return text
     try:
         import rcssmin
     except ImportError:
@@ -61,7 +84,9 @@ def minify_css(text):
     return rcssmin.cssmin(text)
 
 
-def minify_js(text):
+def minify_js(text, dev=False):
+    if dev:
+        return text
     try:
         import rjsmin
     except ImportError:
@@ -87,17 +112,84 @@ def escape_attr(value):
     return value.replace("&", "&amp;").replace('"', "&quot;")
 
 
-class Bundler(HTMLParser):
-    """Single pass over index.html: inline assets, collect section ids."""
+def expand_includes(html, seen=None):
+    """Replace <!-- @include <relpath> --> with the file content.
 
-    def __init__(self, loader):
+    Paths are relative to src_web. Includes nest; cycles fail.
+    Plain string search only, no regex.
+    """
+    if seen is None:
+        seen = []
+    out = []
+    pos = 0
+    while True:
+        beg = html.find(INCLUDE_OPEN, pos)
+        if beg < 0:
+            out.append(html[pos:])
+            break
+        end = html.find(INCLUDE_CLOSE, beg)
+        if end < 0:
+            fail("unterminated @include directive")
+        directive = html[beg:end + len(INCLUDE_CLOSE)]
+        inner = directive[len(INCLUDE_OPEN):-len(INCLUDE_CLOSE)].strip()
+        if not inner:
+            fail("empty @include directive")
+        if inner in seen:
+            fail("include cycle: %s" % " -> ".join(seen + [inner]))
+        inc_path = os.path.join(WEB_SRC, inner)
+        if not os.path.isfile(inc_path):
+            fail("include not found: %s" % inc_path)
+        with open(inc_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = expand_includes(content, seen + [inner])
+        out.append(html[pos:beg])
+        out.append(content)
+        pos = end + len(INCLUDE_CLOSE)
+    return "".join(out)
+
+
+def list_includes(shell_html):
+    """Return [@include paths] in order of appearance in the shell."""
+    found = []
+    pos = 0
+    while True:
+        beg = shell_html.find(INCLUDE_OPEN, pos)
+        if beg < 0:
+            return found
+        end = shell_html.find(INCLUDE_CLOSE, beg)
+        if end < 0:
+            fail("unterminated @include directive")
+        inner = shell_html[beg + len(INCLUDE_OPEN):end].strip()
+        found.append(inner)
+        pos = end + len(INCLUDE_CLOSE)
+
+
+class Bundler(HTMLParser):
+    """Single pass over HTML: inline assets, collect section ids.
+
+    With combine_js=True all local scripts are merged into one <script>
+    at the position of the first script tag, wrapped in a single IIFE
+    by the caller (see combined_script). Legacy mode emits one
+    <script> per file.
+    """
+
+    def __init__(self, loader, combine_js=False, dev=False, sizes=None):
         super().__init__(convert_charrefs=True)
         self.loader = loader
+        self.combine_js = combine_js
+        self.dev = dev
+        self.sizes = sizes if sizes is not None else {}
         self.out = []
         self.section_ids = set()
         self.leftover_refs = []
         self._raw_depth = 0
         self._skip_script = False
+        self.js_parts = []  # [(src, code)] in encounter order
+        self.js_slot = None  # index in self.out for the combined script
+
+    def combined_script(self):
+        body = "\n".join(code for _, code in self.js_parts)
+        return "<script>(function () {\n%s\n})();</script>" % body
 
     def _emit_tag(self, tag, attrs):
         parts = [tag]
@@ -119,9 +211,12 @@ class Bundler(HTMLParser):
         if tag == "link" and "stylesheet" in current.get("rel", "").split():
             href = current.get("href", "")
             if is_local_ref(href):
-                css = minify_css(self.loader(href))
+                raw = self.loader(href)
+                css = minify_css(raw, self.dev)
                 if "</style" in css.lower():
                     fail("detected </style> inside minified %s" % href)
+                self.sizes[href] = (len(raw.encode("utf-8")),
+                                    len(css.encode("utf-8")))
                 media = current.get("media", "")
                 extra = ' media="%s"' % escape_attr(media) if media else ""
                 self.out.append("<style%s>%s</style>" % (extra, css))
@@ -131,9 +226,19 @@ class Bundler(HTMLParser):
                 pass  # exotic case, copy through and report below
             else:
                 src = current["src"]
-                js = minify_js(self.loader(src))
+                raw = self.loader(src)
+                js = minify_js(raw, self.dev)
                 if "</script" in js.lower():
                     fail("detected </script> inside minified %s" % src)
+                self.sizes[src] = (len(raw.encode("utf-8")),
+                                   len(js.encode("utf-8")))
+                if self.combine_js:
+                    self.js_parts.append((src, js))
+                    if self.js_slot is None:
+                        self.js_slot = len(self.out)
+                        self.out.append(None)  # placeholder, filled after parse
+                    self._skip_script = True  # swallow the original empty body
+                    return
                 self.out.append("<script>%s</script>" % js)
                 self._skip_script = True  # swallow the original empty body
                 return
@@ -172,224 +277,111 @@ class Bundler(HTMLParser):
         self.out.append("</" + tag + ">")
 
 
-# ---------------------------------------------------------------------------
-# Minimal scanner for the SECTIONS route table in app.js.
-# Understands just enough JavaScript to pull out objects shaped like
-#   { id: "status", pages: ["overview", ...] }
-# and skips everything else. Raises ValueError on malformed input.
-# ---------------------------------------------------------------------------
-
-def _skip_ws_comments(text, i):
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c in " \t\r\n\v\f":
-            i += 1
-        elif c == "/" and i + 1 < n and text[i + 1] == "/":
-            j = text.find("\n", i + 2)
-            i = n if j < 0 else j + 1
-        elif c == "/" and i + 1 < n and text[i + 1] == "*":
-            j = text.find("*/", i + 2)
-            if j < 0:
-                return n
-            i = j + 2
-        else:
-            break
-    return i
-
-
-def _parse_string(text, i):
-    quote = text[i]
-    i += 1
-    buf = []
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == "\\" and i + 1 < n:
-            buf.append(text[i + 1])
-            i += 2
-            continue
-        if c == quote:
-            return "".join(buf), i + 1
-        buf.append(c)
-        i += 1
-    raise ValueError("unterminated string literal")
-
-
-def _parse_ident(text, i):
-    j = i
-    while j < len(text) and (text[j].isalnum() or text[j] in "_$"):
-        j += 1
-    if j == i:
-        raise ValueError("expected identifier")
-    return text[i:j], j
-
-
-def _skip_value(text, i):
-    """Skip one JavaScript value starting at i, return the index after it."""
-    i = _skip_ws_comments(text, i)
-    if i >= len(text):
-        raise ValueError("unexpected end of input")
-    c = text[i]
-    if c in "\"'":
-        _, i = _parse_string(text, i)
-        return i
-    if c in "[{":
-        opener = c
-        closer = "]" if c == "[" else "}"
-        depth = 1
-        i += 1
-        while i < len(text) and depth > 0:
-            ch = text[i]
-            if ch in "\"'":
-                _, i = _parse_string(text, i)
-                continue
-            if ch == "/" and i + 1 < len(text) and text[i + 1] in "/*":
-                i = _skip_ws_comments(text, i)
-                continue
-            if ch == opener:
-                depth += 1
-            elif ch == closer:
-                depth -= 1
-            i += 1
-        if depth != 0:
-            raise ValueError("unbalanced brackets")
-        return i
-    while i < len(text) and text[i] not in ",}]":
-        if text[i] in "\"'":
-            _, i = _parse_string(text, i)
-            continue
-        i += 1
-    return i
-
-
-def _try_parse_route_object(text, i):
-    """Parse one {...} at i. Return ((id, [pages]) or None, index after })."""
-    j = _skip_ws_comments(text, i + 1)
-    rid = None
-    pages = None
-    while True:
-        j = _skip_ws_comments(text, j)
-        if j < len(text) and text[j] == "}":
-            return (None, j + 1) if rid is None or pages is None else ((rid, pages), j + 1)
-        if j < len(text) and text[j] in "\"'":
-            key, j = _parse_string(text, j)
-        else:
-            key, j = _parse_ident(text, j)
-        j = _skip_ws_comments(text, j)
-        if j >= len(text) or text[j] != ":":
-            raise ValueError("not a route object")
-        j = _skip_ws_comments(text, j + 1)
-        if key == "id":
-            if j >= len(text) or text[j] not in "\"'":
-                raise ValueError("route id is not a string")
-            rid, j = _parse_string(text, j)
-        elif key == "pages":
-            if j >= len(text) or text[j] != "[":
-                raise ValueError("route pages is not an array")
-            j += 1
-            items = []
-            while True:
-                j = _skip_ws_comments(text, j)
-                if j < len(text) and text[j] == "]":
-                    j += 1
-                    break
-                if j >= len(text) or text[j] not in "\"'":
-                    raise ValueError("route page is not a string")
-                value, j = _parse_string(text, j)
-                items.append(value)
-                j = _skip_ws_comments(text, j)
-                if j < len(text) and text[j] == ",":
-                    j += 1
-                elif j < len(text) and text[j] == "]":
-                    j += 1
-                    break
-                else:
-                    raise ValueError("malformed pages array")
-            pages = items
-        else:
-            j = _skip_value(text, j)
-        j = _skip_ws_comments(text, j)
-        if j < len(text) and text[j] == ",":
-            j += 1
-        elif j < len(text) and text[j] == "}":
-            if rid is None or pages is None:
-                return None, j + 1
-            return (rid, pages), j + 1
-        else:
-            raise ValueError("not a route object")
-
-
-def _skip_template(text, i):
-    """Skip a `...` template literal starting at i, return index after it."""
-    assert text[i] == "`"
-    i += 1
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if c == "`":
-            return i + 1
-        if c == "$" and i + 1 < n and text[i + 1] == "{":
-            i = _skip_value(text, i + 1)
-            continue
-        i += 1
-    raise ValueError("unterminated template literal")
-
-
-def find_routes(js):
-    """Return [(section_id, [pages])] for every route object in the script."""
-    routes = []
-    i = 0
-    n = len(js)
-    while i < n:
-        i = _skip_ws_comments(js, i)
-        if i >= n:
-            break
-        c = js[i]
-        if c in "\"'":
-            try:
-                _, i = _parse_string(js, i)
-            except ValueError:
-                i += 1
-            continue
-        if c == "`":
-            try:
-                i = _skip_template(js, i)
-            except ValueError:
-                i += 1
-            continue
-        if c != "{":
-            i += 1
-            continue
+def load_manifest():
+    if not os.path.isfile(MANIFEST):
+        return None
+    with open(MANIFEST, "r", encoding="utf-8") as f:
         try:
-            found, j = _try_parse_route_object(js, i)
-        except (ValueError, IndexError):
-            i += 1  # not a route-shaped object, keep scanning
-            continue
-        if found is not None:
-            routes.append(found)
-        i = j
-    return routes
+            data = json.load(f)
+        except ValueError as e:
+            fail("bad manifest.json: %s" % e)
+    for key in ("shell", "css", "js", "pages"):
+        if key not in data:
+            fail("manifest.json missing key: %s" % key)
+    return data
 
 
-def main():
-    html = read_src("index.html")
-    bundler = Bundler(read_src)
+def shell_script_srcs(shell_html):
+    """Local script srcs in shell order (string search, no regex)."""
+    srcs = []
+    pos = 0
+    while True:
+        i = shell_html.find("<script", pos)
+        if i < 0:
+            return srcs
+        j = shell_html.find(">", i)
+        if j < 0:
+            fail("unterminated <script> tag in shell")
+        tag = shell_html[i:j + 1]
+        # find src="..." with either quote style
+        for q in ('"', "'"):
+            key = "src=" + q
+            k = tag.find(key)
+            if k >= 0:
+                m = tag.find(q, k + len(key))
+                if m >= 0:
+                    srcs.append(tag[k + len(key):m])
+                break
+        pos = j + 1
+
+
+def check_manifest(manifest, shell_html):
+    want_js = manifest["js"]
+    got_js = [s for s in shell_script_srcs(shell_html) if is_local_ref(s)]
+    if got_js != want_js:
+        fail("shell scripts != manifest js:\n shell: %s\n manifest: %s"
+             % (got_js, want_js))
+    want_pages = manifest["pages"]
+    got_pages = list_includes(shell_html)
+    if got_pages != want_pages:
+        fail("shell includes != manifest pages:\n shell: %s\n manifest: %s"
+             % (got_pages, want_pages))
+    routes_from = manifest.get("routes_from", "router.js")
+    if routes_from not in want_js:
+        fail("routes_from %s not in manifest js" % routes_from)
+    return routes_from
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Bundle the NNode web UI.")
+    ap.add_argument("--dev", action="store_true",
+                    help="skip minification (larger output, easier to debug)")
+    ap.add_argument("--check", action="store_true",
+                    help="validate only, write nothing")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print per-file sizes")
+    args = ap.parse_args(argv)
+
+    manifest = load_manifest()
+    if manifest is None:
+        shell_name = "index.html"
+        routes_name = "app.js"
+        combine = False
+        routes_from = routes_name
+    else:
+        shell_name = manifest["shell"]
+        with open(os.path.join(WEB_SRC, shell_name), "r",
+                  encoding="utf-8") as f:
+            shell_raw = f.read()
+        routes_from = check_manifest(manifest, shell_raw)
+        combine = True
+
+    shell_html = read_src(shell_name)
+    html = expand_includes(shell_html)
+    sizes = {}
+    bundler = Bundler(read_src, combine_js=combine, dev=args.dev,
+                       sizes=sizes)
     bundler.feed(html)
     bundler.close()
-    bundled = "".join(bundler.out)
+    if combine and bundler.js_parts:
+        bundler.out[bundler.js_slot] = bundler.combined_script()
+    bundled = "".join(x for x in bundler.out if x is not None)
 
     if bundler.leftover_refs:
         print("WARNING: uninlined local refs left: %s" % bundler.leftover_refs)
 
     # Every #/section/page route must resolve to a <section> id:
     # multi-page sections use page-<sec>-<page>, single-page use page-<sec>.
-    routes = find_routes(read_src("app.js"))
+    try:
+        routes_js = read_src(routes_from)
+    except SystemExit:
+        raise
+    routes = find_routes(routes_js)
+    if not routes and manifest is not None:
+        # Fallback while migrating: scan the whole bundle.
+        routes = find_routes("\n".join(code for _, code in bundler.js_parts))
     if not routes:
-        fail("no routes found in app.js (SECTIONS table missing?)")
+        fail("no routes found in %s (SECTIONS table missing?)" % routes_from)
     bad = []
     for sec, pages in routes:
         if len(pages) > 1:
@@ -404,6 +396,17 @@ def main():
 
     data = bundled.encode("utf-8")
     gz = gzip.compress(data, compresslevel=9, mtime=0)
+    if args.verbose or manifest is not None:
+        for name in sorted(sizes):
+            raw, out = sizes[name]
+            pct = (100.0 * out / raw) if raw else 0.0
+            print(" %-40s %6d -> %6d (%4.1f%%)" % (name, raw, out, pct))
+    print("html %6d -> gzip %6d (%4.1f%%)" % (len(data), len(gz),
+                                              100.0 * len(gz) / len(data)))
+    if args.check:
+        print("check ok: %d routes, %d sections"
+              % (len(routes), len(bundler.section_ids)))
+        return 0
     os.makedirs(HTML_OUT_DIR, exist_ok=True)
     out = os.path.join(HTML_OUT_DIR, "index.html")
     with open(out, "w", encoding="utf-8", newline="") as f:
@@ -412,7 +415,6 @@ def main():
     page_gz = os.path.join(PAGE_DIR, "index.html.gz")
     with open(page_gz, "wb") as f:
         f.write(gz)
-    print("html %6d -> gzip %6d (%4.1f%%)" % (len(data), len(gz), 100.0 * len(gz) / len(data)))
     print("wrote %s" % out)
     print("wrote %s" % page_gz)
     return 0

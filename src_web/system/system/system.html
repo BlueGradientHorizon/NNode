@@ -1,0 +1,59 @@
+<section id="page-system-system" hidden>
+    <h2 data-i18n="p_system">Система</h2>
+    <p class="descr" data-i18n="d_system">Время, железо, разделы flash.</p>
+    <h3 data-i18n="sys_props">Свойства системы</h3>
+    <div class="g-tabs" id="s-tabs">
+      <button class="g-tab" type="button" data-s="general" data-i18n="s_general">Основные настройки</button>
+      <button class="g-tab" type="button" data-s="timesync" data-i18n="s_timesync">Синхронизация времени</button>
+      <button class="g-tab" type="button" data-s="lang" data-i18n="s_lang">Язык и стиль</button>
+    </div>
+    <div id="s-pane-general">
+      <div class="frm">
+        <div class="frm-row"><span class="flab" data-i18n="time">Время</span><div class="fval">
+          <p id="sys-time">...</p>
+          <p><button id="time-sync" class="btn btn-primary" type="button" data-i18n="sync_browser">Синхронизировать с браузером</button>
+            <button id="ntp-sync" class="btn btn-primary" type="button" data-i18n="ntp_go">Синхронизировать с NTP-сервером</button></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="sys_hostname">Имя хоста</span><div class="fval">
+          <p><input id="host-input" type="text" size="16" maxlength="32"></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="tz_label">Часовой пояс</span><div class="fval">
+          <p><select id="tz-select"></select></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="timefmt">Формат времени</span><div class="fval">
+          <p><select id="timefmt-select">
+            <option value="24" data-i18n="fmt24">24 часа</option>
+            <option value="12" data-i18n="fmt12">12 часов</option>
+          </select></p>
+        </div></div>
+      </div>
+    </div>
+    <div id="s-pane-timesync" hidden>
+      <div class="frm">
+        <div class="frm-row"><span class="flab" data-i18n="ntp_enable">Включить NTP</span><div class="fval">
+          <p><input id="ntp-en" type="checkbox"></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="ntp_servers">Серверы</span><div class="fval">
+          <div id="ntp-list"></div>
+          <div class="ntp-row"><input id="ntp-add" type="text" size="28" placeholder="pool.ntp.org">
+            <button id="ntp-plus" class="btn add" type="button">+</button></div>
+          <p id="ntp-status">...</p>
+        </div></div>
+      </div>
+    </div>
+    <div id="s-pane-lang" hidden>
+      <div class="frm">
+        <div class="frm-row"><span class="flab" data-i18n="lang_title">Язык</span><div class="fval">
+          <p><select id="lang-select">
+            <option value="auto" data-i18n="l_auto">Авто</option>
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+          </select></p>
+        </div></div>
+        <div class="frm-row"><span class="flab" data-i18n="design">Дизайн</span><div class="fval">
+          <p><select disabled><option data-i18n="design_sys">Системный</option></select></p>
+        </div></div>
+      </div>
+    </div>
+    <div class="savebar"><button id="sys-save" class="btn btn-primary" type="button" data-i18n="save">Сохранить</button></div>
+  </section>

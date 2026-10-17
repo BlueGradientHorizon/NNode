@@ -1,0 +1,19 @@
+<section id="page-network-diagnostics" hidden>
+    <h2 data-i18n="p_diagnostics">Диагностика</h2>
+    <p class="descr" data-i18n="d_diagnostics">Проверка связи с другими узлами сети.</p>
+    <div class="diag-row">
+      <div class="diag-col">
+        <p class="ping-row"><input id="ping-host" type="text" size="16" value="192.168.1.1" placeholder="host"><input id="ping-count" class="num" type="text" size="3" value="4" placeholder="count"><input id="ping-interval" class="num" type="text" size="5" value="1000" placeholder="ms"></p>
+        <p><button id="ping-go" class="btn btn-primary" type="button" data-i18n="diag_ping">IPv4 Ping</button></p>
+      </div>
+      <div class="diag-col">
+        <p><input id="trace-host" type="text" size="16" value="openwrt.org"></p>
+        <p><button id="trace-go" class="btn btn-primary" type="button" data-i18n="diag_trace">IPv4 Traceroute</button></p>
+      </div>
+      <div class="diag-col">
+        <p><input id="ns-host" type="text" size="16" value="openwrt.org"></p>
+        <p><button id="ns-go" class="btn btn-primary" type="button" data-i18n="diag_ns">Nslookup</button></p>
+      </div>
+    </div>
+    <pre id="diag-out"></pre>
+  </section>

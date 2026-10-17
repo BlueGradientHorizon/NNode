@@ -70,11 +70,14 @@ the defaults.
 
 ### Frontend
 
-The UI lives in `src_web/` (`index.html`, `style.css`, `i18n.js`, `app.js`)
+The UI lives in `src_web/` (`index.html` shell with `<!-- @include -->`
+partials, `style.css`, `i18n.js`, shared `api.js`/`router.js`/`ui.js`/`format.js`/
+`init.js` in the root plus `<category>/<page>/<page>.js|html` per section,
+listed in `manifest.json`)
 and is plain dependency-free JavaScript. `tools/web_inline.py` inlines and
 minifies
 the CSS/JS into a single bundle, checks that every route from
-`app.js` resolves to a `<section>` in the markup, writes
+`router.js` resolves to a `<section>` in the markup, writes
 `src_web/inlined/index.html` for desktop layout checks, and drops
 `index.html.gz` straight into `main/page/`. The `.gz` copy is embedded into the firmware
 (`EMBED_FILES` in `main/CMakeLists.txt`) and served as-is with
@@ -224,7 +227,9 @@ storage,  data, littlefs, 0x290000, 0x170000,
 
 ```text
 NNode/
-  src_web/        web UI sources: index.html, style.css, i18n.js, app.js;
+  src_web/        web UI sources: index.html shell, style.css, i18n.js,
+                  shared api/router/ui/format/init.js in the root,
+                  <category>/<page>/ partials and logic, manifest.json;
                   generated preview in src_web/inlined/ (not committed)
   tools/          build helpers: web_inline.py (minify, inline, gzip),
                   gen_modsym.py (ELF module symbol table)

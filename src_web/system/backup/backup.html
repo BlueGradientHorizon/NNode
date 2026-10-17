@@ -1,0 +1,22 @@
+<section id="page-system-backup" hidden>
+    <h2 data-i18n="flash_ops">Операции с прошивкой</h2>
+    <h3 data-i18n="bk_title">Резервная копия</h3>
+    <p class="descr" data-i18n="bk_hint">Нажмите «Создать файл бэкапа», затем скачайте его.</p>
+    <div class="frm">
+      <div class="frm-row"><span class="flab" data-i18n="bk_dl">Скачать бэкап</span><div class="fval">
+        <p><button id="bk-dl" class="btn btn-primary" type="button" data-i18n="bk_dl">Скачать файл бэкапа</button></p>
+      </div></div>
+    </div>
+    <h3 data-i18n="bk_restore_h">Восстановление</h3>
+    <p class="descr" data-i18n="bk_rst_hint">Загрузите ранее созданный файл бэкапа. Для сброса прошивки к начальному состоянию нажмите «Выполнить сброс».</p>
+    <div class="frm">
+      <div class="frm-row"><span class="flab" data-i18n="bk_reset_row">Сброс к начальным</span><div class="fval">
+        <p><button id="fr-go" class="btn btn-danger" type="button" data-i18n="fr_go">Выполнить сброс</button></p>
+      </div></div>
+      <div class="frm-row"><span class="flab" data-i18n="bk_up_row">Восстановить бэкап</span><div class="fval">
+        <p><input id="bk-pick" type="file" hidden>
+          <button id="bk-up2" class="btn btn-primary" type="button" data-i18n="bk_up">Загрузить архив...</button></p>
+        <p class="descr" data-i18n="bk_note">Восстановление полностью заменяет /data и перезагружает плату.</p>
+      </div></div>
+    </div>
+  </section>
