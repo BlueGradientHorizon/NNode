@@ -17,6 +17,7 @@
     ovRow(sb, t("ov_mac"), y.mac || "?");
     ovRow(sb, t("ov_hostname"), y.hostname || "?");
     ovRow(sb, t("ov_reset"), y.reset || "?");
+    ovRow(sb, t("ov_slot"), y.ota || "?");
     d = new Date(y.time * 1000);
     ovRow(sb, t("ov_time"), fmtDateTime(y.time));
     ovRow(sb, t("ov_uptime"), fmtDur(s.uptime));

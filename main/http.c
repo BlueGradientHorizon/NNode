@@ -14,6 +14,7 @@
 #include "logbuf.h"
 #include "syscfg.h"
 #include "backup.h"
+#include "ota.h"
 #include "tasks.h"
 #include "net.h"
 #include "wifi.h"
@@ -48,7 +49,9 @@ static const char *TAG = "nnode_http";
  * dup (409 already in autostart), no_schema (404 no settings schema),
  * cfg (400 bad settings value).
  * Files: open (500 cannot create), write (500 write failed).
- * Reset: tasks_running (409 unload modules first), reset (500 failed). */
+ * Reset: tasks_running (409 unload modules first), reset (500 failed).
+ * OTA (400 bad image/state, 409 busy or live modules, 404 no fallback):
+ * bad_image, ota_begin, ota_write, ota_end, ota_boot, ota_target. */
 static esp_err_t send_err(httpd_req_t *r, const char *code)
 {
     char eb[128];
@@ -96,6 +99,9 @@ static esp_err_t h_ntpsync(httpd_req_t *r);
 static esp_err_t h_hostname(httpd_req_t *r);
 static esp_err_t h_tz(httpd_req_t *r);
 static esp_err_t h_backup(httpd_req_t *r);
+static esp_err_t h_otastatus(httpd_req_t *r);
+static esp_err_t h_otaupload(httpd_req_t *r);
+static esp_err_t h_otarollback(httpd_req_t *r);
 static esp_err_t h_cfgexport(httpd_req_t *r);
 static esp_err_t h_restore(httpd_req_t *r);
 static esp_err_t h_reset(httpd_req_t *r);
@@ -156,7 +162,7 @@ static esp_err_t h_sys(httpd_req_t *r)
 /* URI handler budget: httpd preallocates max_uri_handlers slots and
  * answers 404 to anything past it, so the table size is asserted at
  * compile time below. Bump together with the table. */
-#define NNODE_HTTP_MAX_URIS 64
+#define NNODE_HTTP_MAX_URIS 67
 
 void nnode_http_start(void)
 {
@@ -222,6 +228,9 @@ void nnode_http_start(void)
         { .uri = "/api/backup", .method = HTTP_GET, .handler = h_backup },
         { .uri = "/api/config/export", .method = HTTP_GET, .handler = h_cfgexport },
         { .uri = "/api/backup/restore", .method = HTTP_POST, .handler = h_restore },
+        { .uri = "/api/ota/status", .method = HTTP_GET, .handler = h_otastatus },
+        { .uri = "/api/ota/upload", .method = HTTP_POST, .handler = h_otaupload },
+        { .uri = "/api/ota/rollback", .method = HTTP_POST, .handler = h_otarollback },
         { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_reset },
     };
     _Static_assert(sizeof(kUris) / sizeof(kUris[0]) <= NNODE_HTTP_MAX_URIS,
@@ -1692,4 +1701,137 @@ static esp_err_t h_elfconfig_save(httpd_req_t *r)
     }
     httpd_resp_set_status(r, "404 Not Found");
     return send_err(r, "no_schema");
+}
+
+static esp_err_t h_otastatus(httpd_req_t *r)
+{
+    char *b = malloc(1024);
+    int n;
+    esp_err_t e;
+    if (!b) {
+        return ESP_ERR_NO_MEM;
+    }
+    n = nnode_ota_status_json(b, 1024);
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    e = httpd_resp_send(r, b, n < 0 ? 0 : n);
+    free(b);
+    return e;
+}
+
+/* OTA flash runs in its own task: flash erase/write plus the request
+ * stream do not fit the 8 KB httpd worker stack (same reason as
+ * restore). The handler only waits for the result. */
+typedef struct {
+    httpd_req_t *req;
+    int content_len;
+    TaskHandle_t caller;
+    char err[32];
+    int rc;
+} ota_job_t;
+
+static int s_ota_busy;
+static portMUX_TYPE s_ota_mu = portMUX_INITIALIZER_UNLOCKED;
+
+static int ota_read(void *ctx, char *buf, size_t len)
+{
+    ota_job_t *j = (ota_job_t *)ctx;
+    int n = httpd_req_recv(j->req, buf, len);
+    return n <= 0 ? -1 : n;
+}
+
+static void ota_task(void *a)
+{
+    ota_job_t *j = (ota_job_t *)a;
+    j->rc = nnode_ota_upload(ota_read, j, j->content_len,
+        j->err, sizeof(j->err));
+    xTaskNotifyGive(j->caller);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t h_otaupload(httpd_req_t *r)
+{
+    ota_job_t j;
+    int busy;
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    /* Same contract as restore: browsers send Content-Length for Blob
+     * POST, and the flasher streams within that bound. */
+    if (r->content_len <= 0) {
+        httpd_resp_set_status(r, "411 Length Required");
+        return send_err(r, "size");
+    }
+    taskENTER_CRITICAL(&s_ota_mu);
+    busy = s_ota_busy;
+    if (!busy) {
+        s_ota_busy = 1;
+    }
+    taskEXIT_CRITICAL(&s_ota_mu);
+    if (busy) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return send_err(r, "busy");
+    }
+    j.req = r;
+    j.content_len = r->content_len;
+    j.caller = xTaskGetCurrentTaskHandle();
+    j.err[0] = 0;
+    j.rc = -1;
+    if (xTaskCreate(ota_task, "nnode_ota", 12288, &j, 5, NULL) != pdPASS) {
+        taskENTER_CRITICAL(&s_ota_mu);
+        s_ota_busy = 0;
+        taskEXIT_CRITICAL(&s_ota_mu);
+        return ESP_ERR_NO_MEM;
+    }
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    taskENTER_CRITICAL(&s_ota_mu);
+    s_ota_busy = 0;
+    taskEXIT_CRITICAL(&s_ota_mu);
+    httpd_resp_set_type(r, "application/json");
+    if (j.rc != 0) {
+        if (strcmp(j.err, "tasks_running") == 0) {
+            httpd_resp_set_status(r, "409 Conflict");
+        } else {
+            httpd_resp_set_status(r, "400 Bad Request");
+        }
+        return send_err(r, j.err[0] ? j.err : "ota_write");
+    }
+    httpd_resp_sendstr(r, "{\"ok\":true}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
+static esp_err_t h_otarollback(httpd_req_t *r)
+{
+    char q[64], label[16];
+    const char *want = NULL;
+    char err[32];
+    if (r->method != HTTP_POST) {
+        httpd_resp_set_status(r, "405 Method Not Allowed");
+        return send_err(r, "method");
+    }
+    /* Optional ?label=ota_0|ota_1; absent means the other slot. */
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "label", label, sizeof(label)) == ESP_OK) {
+        qry_decode(label);
+        want = label;
+    }
+    if (nnode_ota_rollback(want, err, sizeof(err)) != 0) {
+        httpd_resp_set_type(r, "application/json");
+        if (strcmp(err, "tasks_running") == 0) {
+            httpd_resp_set_status(r, "409 Conflict");
+        } else if (strcmp(err, "not_found") == 0) {
+            httpd_resp_set_status(r, "404 Not Found");
+        } else {
+            httpd_resp_set_status(r, "500 Internal Error");
+        }
+        return send_err(r, err[0] ? err : "ota_boot");
+    }
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_sendstr(r, "{\"ok\":true}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
 }

@@ -138,6 +138,9 @@
     if (k === "system/system") return function () {
       get("/api/sys", renderSys);
     };
+    if (k === "system/backup") return function () {
+      loadOtaStatus();
+    };
     if (k === "programs/modules") return function () {
       loadModules();
     };

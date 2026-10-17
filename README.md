@@ -25,6 +25,7 @@ assets and fits easily next to your application.
 - ELF program loader: run several copies of modules stored in
   `/data/programs`, stop (SIGTERM) or kill (SIGKILL) each instance
 - One-file backup and restore (CBOR) plus factory reset
+- A/B firmware updates over two OTA slots with rollback
 - Hostname, timezone, NTP/SNTP, 12/24-hour clock and RU/EN language settings
 - Hash routing (`#/section/page`), served over plain HTTP
 
@@ -119,6 +120,8 @@ The firmware runs `esp_http_server` with a small JSON REST API:
    `GET /api/elf/config`, `POST /api/elf/config/save`
 - backup: `GET /api/backup`, `POST /api/backup/restore`,
   `POST /api/factory-reset`, `GET /api/config/export`
+- OTA (A/B slots): `GET /api/ota/status`, `POST /api/ota/upload`,
+  `POST /api/ota/rollback`
 
 Settings live in text files under `/data/configs` (one file per package:
 `device`, `time`, `sta`, `ap`); user files live in LittleFS on `/data`.
@@ -220,15 +223,22 @@ restart to apply. See `examples/blink/config.defaults`.
    at once (one file may run several times, each copy takes a slot).
 - Only tasks named `nnode_*` can be stopped from the Processes page.
 
-### Flash layout (4 MB, offsets are fixed - never move `storage`)
+### Flash layout (4 MB, A/B slots - no factory partition)
 
 ```csv
 nvs,      data, nvs,      0x9000,   0x6000,
 phy_init, data, phy,      0xf000,   0x1000,
-factory,  app,  factory,  0x10000,  0x140000,
-ota_0,    app,  ota_0,    0x150000, 0x140000,
-storage,  data, littlefs, 0x290000, 0x170000,
+ota_0,    app,  ota_0,    0x10000,  0x140000,
+ota_1,    app,  ota_1,    0x150000, 0x140000,
+otadata,  data, ota,      0x290000, 0x2000,
+storage,  data, littlefs, 0x292000, 0x16E000,
 ```
+
+Updates always go to the inactive slot (`POST /api/ota/upload`
+with `nnode.bin`, `GET /api/ota/status` shows both slots,
+`POST /api/ota/rollback` boots the other one). With rollback
+enabled the bootloader falls back to the old slot if the new
+one crashes before confirming.
 
 ## Repository layout
 

@@ -19,4 +19,20 @@
         <p class="descr" data-i18n="bk_note">Восстановление полностью заменяет /data и перезагружает плату.</p>
       </div></div>
     </div>
+    <h3 data-i18n="ota_title">Прошивка</h3>
+    <p class="descr" data-i18n="ota_hint">Два слота A/B: обновление пишется в неактивный слот, старый остается как запасной.</p>
+    <div class="frm">
+      <div class="frm-row"><span class="flab" data-i18n="ota_slots">Слоты</span><div class="fval">
+        <div id="ota-slots"></div>
+      </div></div>
+      <div class="frm-row"><span class="flab" data-i18n="ota_up_row">Обновление</span><div class="fval">
+        <p><input id="ota-pick" type="file" accept=".bin" hidden>
+          <button id="ota-up" class="btn btn-primary" type="button" data-i18n="ota_up">Выбрать .bin и обновить...</button></p>
+        <div id="ota-prog" class="ov-bar" hidden><div id="ota-fill" class="ov-fill"></div></div>
+        <p class="descr" data-i18n="ota_note">Файл - nnode.bin из сборки. Плата перезагрузится после заливки.</p>
+      </div></div>
+      <div class="frm-row"><span class="flab" data-i18n="ota_rb_row">Откат</span><div class="fval">
+        <p><button id="ota-rb" class="btn" type="button" data-i18n="ota_rb">Загрузиться в другой слот</button></p>
+      </div></div>
+    </div>
   </section>

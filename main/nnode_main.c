@@ -10,6 +10,7 @@
 #include "files.h"
 #include "http.h"
 #include "modsym.h"
+#include "ota.h"
 
 static const char *TAG = "nnode";
 
@@ -38,5 +39,8 @@ void app_main(void)
     nnode_graphs_start();
     nnode_http_start();
     nnode_autostart_run();
+    /* Past this point the boot counts as clean: confirm the OTA slot
+     * so the bootloader stops treating it as pending verification. */
+    nnode_ota_mark_valid();
     ESP_LOGI(TAG, "ready");
 }

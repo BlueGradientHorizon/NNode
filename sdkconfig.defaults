@@ -19,3 +19,6 @@ CONFIG_ELF_FILE_SYSTEM_BASE_PATH="/data"
 # rely on Newlib internals (__getreent), and the pinned elf_loader fork
 # includes <reent.h>. Compatibility matters more than the size saving.
 CONFIG_LIBC_NEWLIB=y
+# A/B firmware updates (ota_0/ota_1): if the new slot crashes before
+# the app marks itself valid, the bootloader falls back to the old slot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

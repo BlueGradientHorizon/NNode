@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
+#include "esp_ota_ops.h"
 #include "esp_mac.h"
 #include "esp_flash.h"
 #include "wifi.h"
@@ -68,6 +69,7 @@ int nnode_api_sys(char *buf, size_t len)
     uint32_t flash_size = 0;
     uint8_t m[6];
     size_t n;
+    const esp_partition_t *run;
     esp_partition_iterator_t it;
     int first = 1;
     struct timeval tv;
@@ -80,6 +82,7 @@ int nnode_api_sys(char *buf, size_t len)
     gettimeofday(&tv, NULL);
     nnode_fs_usage(&fst, &fsu);
     nnode_hostname_get(host, sizeof(host));
+    run = esp_ota_get_running_partition();
     if (ESP_IDF_VERSION_PATCH == 0) {
         snprintf(idf, sizeof(idf), "%d.%d",
             ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR);
@@ -119,7 +122,7 @@ int nnode_api_sys(char *buf, size_t len)
         "\"cpu_mhz\":%u,\"temp_c\":%.1f,\"heap_free\":%u,\"heap_min\":%u,"
         "\"chip_rev\":%d,\"cores\":%d,\"fs_total\":%llu,\"fs_used\":%llu,"
         "\"hostname\":\"%s\",\"model\":\"%s\",\"arch\":\"%s\",\"target\":\"espressif/%s\","
-        "\"flash_mb\":%u,\"mac\":\"%s\",\"reset\":\"%s\",\"partitions\":[",
+        "\"flash_mb\":%u,\"mac\":\"%s\",\"reset\":\"%s\",\"ota\":\"%s\",\"partitions\":[",
         app->version, idf,
         (long long)(esp_timer_get_time() / 1000000), (long long)tv.tv_sec, ip, nnode_net_rssi(),
         (unsigned)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, nnode_temp(),
@@ -127,7 +130,8 @@ int nnode_api_sys(char *buf, size_t len)
         (int)ci.revision, (int)ci.cores,
         (unsigned long long)fst, (unsigned long long)fsu,
         host, model, arch, CONFIG_IDF_TARGET,
-        (unsigned)(flash_size / 1048576), mac, reset);
+        (unsigned)(flash_size / 1048576), mac, reset,
+        run ? run->label : "?");
     it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL);
     for (; it && n < len; it = esp_partition_next(it)) {
         const esp_partition_t *p = esp_partition_get(it);
